@@ -40,6 +40,14 @@ func Decrypt(ctx context.Context, req *DecryptRequest) error {
 		return err
 	}
 
+	// Phase 2.5: Configure RS codec from header
+	// flags[3] is always self-describing: old volumes stored a boolean (1=default parity),
+	// new volumes store the exact byte count. FlagsFromBytes normalizes both cases.
+	if err := decryptSetupCodecs(opCtx, req); err != nil {
+		cleanupDecrypt(opCtx, req)
+		return err
+	}
+
 	// Phase 3: Derive keys
 	if err := decryptDeriveKeys(opCtx, req); err != nil {
 		cleanupDecrypt(opCtx, req)
@@ -169,20 +177,26 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	}
 	defer func() { _ = fin.Close() }()
 
+	// Use ReadHeaderRaw to obtain both the parsed header AND the verbatim decoded bytes.
+	// The raw bytes are needed for v2 header MAC verification: the MAC was computed over
+	// the exact bytes stored in the file, so we must use those bytes (not a struct
+	// re-encoding) when checking, to maintain backward compatibility with v2.07 files
+	// where flags[3] stored a boolean (1) rather than the parity byte count.
 	reader := header.NewReader(fin, req.RSCodecs)
-	result, err := reader.ReadHeader()
+	rawResult, err := reader.ReadHeaderRaw()
 	if err != nil {
 		return fmt.Errorf("read header: %w", err)
 	}
 
-	ctx.Header = result.Header
+	ctx.Header = rawResult.Header
+	ctx.RawHeader = rawResult.Raw
 
 	// Handle decode errors
-	if result.DecodeError != nil {
+	if rawResult.DecodeError != nil {
 		if req.ForceDecrypt {
 			// Continue but mark as damaged
 		} else {
-			return fmt.Errorf("header damaged: %w", result.DecodeError)
+			return fmt.Errorf("header damaged: %w", rawResult.DecodeError)
 		}
 	}
 
@@ -195,6 +209,28 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	// Determine if keyfiles are needed based on header
 	ctx.UseKeyfiles = ctx.Header.Flags.UseKeyfiles
 
+	return nil
+}
+
+// decryptSetupCodecs reinitializes req.RSCodecs when the volume header reports a
+// parity byte count that differs from the current codec.
+// The header always contains the correct parity (old volumes map boolean 1 to DefaultRS128ParityBytes).
+func decryptSetupCodecs(ctx *OperationContext, req *DecryptRequest) error {
+	rsParityBytes := ctx.Header.Flags.RSParityBytes
+	if rsParityBytes == 0 {
+		rsParityBytes = encoding.DefaultRS128ParityBytes
+	}
+
+	currentParity := req.RSCodecs.RS128.Total() - req.RSCodecs.RS128.Required()
+	if rsParityBytes == currentParity {
+		return nil
+	}
+
+	newCodecs, err := encoding.NewRSCodecsWithPayloadParity(rsParityBytes)
+	if err != nil {
+		return fmt.Errorf("initializing RS codecs from header (parity=%d): %w", rsParityBytes, err)
+	}
+	req.RSCodecs = newCodecs
 	return nil
 }
 
@@ -286,7 +322,12 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 		}
 
 		// Verify header MAC
-		authResult := header.VerifyV2Header(subkeyHeader, ctx.Header, ctx.KeyfileHash)
+		// Use VerifyV2HeaderRaw so the HMAC is computed over the exact bytes that
+		// were written to disk (ctx.RawHeader.Flags) instead of a struct re-encoding.
+		// This is necessary for backward compatibility with v2.07 files, where
+		// flags[3] stored a boolean 1 rather than the parity byte count that
+		// Flags.ToBytes() now emits for v2.08+.
+		authResult := header.VerifyV2HeaderRaw(subkeyHeader, ctx.RawHeader, ctx.Header, ctx.KeyfileHash)
 
 		if !authResult.Valid {
 			if req.ForceDecrypt {
@@ -374,7 +415,7 @@ func decryptVerifyMACFirst(ctx *OperationContext, req *DecryptRequest) error {
 	// Pre-allocate buffer outside loop to reduce GC pressure
 	var srcBufSize int
 	if reedsolo {
-		srcBufSize = util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize
+		srcBufSize = util.MiB / req.RSCodecs.RS128.Required() * req.RSCodecs.RS128.Total()
 	} else {
 		srcBufSize = util.MiB
 	}
@@ -405,7 +446,7 @@ func decryptVerifyMACFirst(ctx *OperationContext, req *DecryptRequest) error {
 			mac.Write(data)
 
 			if reedsolo {
-				done += int64(util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize)
+				done += int64(util.MiB / req.RSCodecs.RS128.Required() * req.RSCodecs.RS128.Total())
 			} else {
 				done += int64(n)
 			}
@@ -517,11 +558,11 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 	reedsolo := ctx.Header.Flags.ReedSolomon
 	padded := ctx.Header.Flags.Padded
 
-	// Pre-allocate buffers outside loop to reduce GC pressure
-	// RS-encoded buffer is larger: 1 MiB * 136/128 = ~1.0625 MiB
+	// Pre-allocate buffers outside loop to reduce GC pressure.
+	// RS-encoded buffer is larger than 1 MiB depending on the payload parity setting.
 	var srcBufSize int
 	if reedsolo {
-		srcBufSize = util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize
+		srcBufSize = util.MiB / req.RSCodecs.RS128.Required() * req.RSCodecs.RS128.Total()
 	} else {
 		srcBufSize = util.MiB
 	}
@@ -560,7 +601,7 @@ func decryptPayloadWithFastDecode(ctx *OperationContext, req *DecryptRequest, fa
 			}
 
 			if reedsolo {
-				done += int64(util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize)
+				done += int64(util.MiB / req.RSCodecs.RS128.Required() * req.RSCodecs.RS128.Total())
 			} else {
 				done += int64(n)
 			}
@@ -742,42 +783,44 @@ func cleanupDecrypt(ctx *OperationContext, req *DecryptRequest) {
 // This matches the original Picocrypt behavior for performance.
 func decodeWithRSFast(data []byte, rs *encoding.RSCodecs, isLast, padded, forceDecode, fastDecode bool) ([]byte, error) {
 	var result []byte
-	fullBlockEncodedSize := util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize
+	dataSize := rs.RS128.Required()
+	encodedSize := rs.RS128.Total()
+	fullBlockEncodedSize := util.MiB / dataSize * encodedSize
 
 	// Full 1 MiB block
 	if len(data) == fullBlockEncodedSize {
-		for i := 0; i < fullBlockEncodedSize; i += encoding.RS128EncodedSize {
-			decoded, err := encoding.Decode(rs.RS128, data[i:i+encoding.RS128EncodedSize], fastDecode)
+		for i := 0; i < fullBlockEncodedSize; i += encodedSize {
+			decoded, err := encoding.Decode(rs.RS128, data[i:i+encodedSize], fastDecode)
 			if err != nil {
 				if forceDecode {
-					decoded = data[i : i+encoding.RS128DataSize] // Use raw data
+					decoded = data[i : i+dataSize] // Use raw data
 				} else {
 					return nil, perrors.ErrCorruptData
 				}
 			}
 
 			// Unpad last chunk if needed
-			if isLast && i == fullBlockEncodedSize-encoding.RS128EncodedSize && padded {
+			if isLast && i == fullBlockEncodedSize-encodedSize && padded {
 				decoded = encoding.Unpad(decoded)
 			}
 
 			result = append(result, decoded...)
 		}
 	} else {
-		// Partial block - must have at least one RS128 chunk
-		if len(data) < encoding.RS128EncodedSize {
+		// Partial block - must have at least one RS chunk
+		if len(data) < encodedSize {
 			if forceDecode {
 				return data, nil // Return raw data for severely truncated input
 			}
 			return nil, perrors.ErrCorruptData
 		}
 
-		chunks := len(data)/encoding.RS128EncodedSize - 1
+		chunks := len(data)/encodedSize - 1
 		for i := 0; i < chunks; i++ {
-			decoded, err := encoding.Decode(rs.RS128, data[i*encoding.RS128EncodedSize:(i+1)*encoding.RS128EncodedSize], fastDecode)
+			decoded, err := encoding.Decode(rs.RS128, data[i*encodedSize:(i+1)*encodedSize], fastDecode)
 			if err != nil {
 				if forceDecode {
-					decoded = data[i*encoding.RS128EncodedSize : i*encoding.RS128EncodedSize+encoding.RS128DataSize]
+					decoded = data[i*encodedSize : i*encodedSize+dataSize]
 				} else {
 					return nil, perrors.ErrCorruptData
 				}
@@ -786,8 +829,8 @@ func decodeWithRSFast(data []byte, rs *encoding.RSCodecs, isLast, padded, forceD
 		}
 
 		// Last chunk (always unpad)
-		lastChunkStart := chunks * encoding.RS128EncodedSize
-		lastChunkEnd := lastChunkStart + encoding.RS128EncodedSize
+		lastChunkStart := chunks * encodedSize
+		lastChunkEnd := lastChunkStart + encodedSize
 		if lastChunkEnd > len(data) {
 			lastChunkEnd = len(data)
 		}
@@ -795,7 +838,7 @@ func decodeWithRSFast(data []byte, rs *encoding.RSCodecs, isLast, padded, forceD
 		if err != nil {
 			if forceDecode {
 				// Safely extract what we can
-				safeEnd := lastChunkStart + encoding.RS128DataSize
+				safeEnd := lastChunkStart + dataSize
 				if safeEnd > len(data) {
 					safeEnd = len(data)
 				}

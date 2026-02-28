@@ -72,6 +72,7 @@ var (
 	encComments       string
 	encParanoid       bool
 	encReedSolomon    bool
+	encRSParity       int
 	encDeniability    bool
 	encCompress       bool
 	encSplit          bool
@@ -99,6 +100,7 @@ func init() {
 	encryptCmd.Flags().StringVarP(&encComments, "comments", "c", "", "Comments to store in header (NOT encrypted)")
 	encryptCmd.Flags().BoolVar(&encParanoid, "paranoid", false, "Enable paranoid mode (Serpent + XChaCha20, HMAC-SHA3)")
 	encryptCmd.Flags().BoolVar(&encReedSolomon, "reed-solomon", false, "Enable Reed-Solomon error correction (6% overhead)")
+	encryptCmd.Flags().IntVar(&encRSParity, "rs-parity", 0, "Reed-Solomon parity overhead percentage (1-99; 0=default ~6%); requires --reed-solomon")
 	encryptCmd.Flags().BoolVar(&encDeniability, "deniability", false, "Add deniability wrapper")
 	encryptCmd.Flags().BoolVar(&encCompress, "compress", false, "Compress files before encryption")
 
@@ -367,6 +369,18 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initializing Reed-Solomon codecs: %w", err)
 	}
+	if encReedSolomon && encRSParity > 0 {
+		parityBytes := (encoding.RS128DataSize*encRSParity + 50) / 100
+		if parityBytes < 1 {
+			parityBytes = 1
+		} else if parityBytes > 127 {
+			parityBytes = 127
+		}
+		rsCodecs, err = encoding.NewRSCodecsWithPayloadParity(parityBytes)
+		if err != nil {
+			return fmt.Errorf("initializing custom Reed-Solomon codec: %w", err)
+		}
+	}
 
 	// Create reporter
 	reporter := NewReporter(encQuiet)
@@ -408,7 +422,11 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Mode: Paranoid (Serpent-CTR + XChaCha20, HMAC-SHA3)")
 		}
 		if encReedSolomon {
-			fmt.Fprintln(os.Stderr, "Reed-Solomon: Enabled (6% size overhead)")
+			if encRSParity > 0 {
+				fmt.Fprintf(os.Stderr, "Reed-Solomon: Enabled (%d%% parity overhead)\n", encRSParity)
+			} else {
+				fmt.Fprintln(os.Stderr, "Reed-Solomon: Enabled (~6% size overhead)")
+			}
 		}
 		if encDeniability {
 			fmt.Fprintln(os.Stderr, "Deniability: Enabled")

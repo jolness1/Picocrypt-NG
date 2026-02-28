@@ -28,7 +28,9 @@ func TestHeaderSize(t *testing.T) {
 }
 
 func TestFlags(t *testing.T) {
-	// Test all flags set
+	// Test all flags set. With the v2.08 format, flags[3] encodes the actual parity
+	// byte count rather than a simple boolean.  When ReedSolomon=true and RSParityBytes=0
+	// ToBytes() falls back to encoding.DefaultRS128ParityBytes (8).
 	flags := Flags{
 		Paranoid:       true,
 		UseKeyfiles:    true,
@@ -41,18 +43,38 @@ func TestFlags(t *testing.T) {
 	if len(b) != 5 {
 		t.Fatalf("ToBytes() length = %d; want 5", len(b))
 	}
-
-	for i := range 5 {
+	// flags[0..2] and [4] are still simple booleans
+	for _, i := range []int{0, 1, 2, 4} {
 		if b[i] != 1 {
 			t.Errorf("ToBytes()[%d] = %d; want 1", i, b[i])
 		}
 	}
+	// flags[3] is now the parity byte count, not a boolean 1
+	if b[3] != encoding.DefaultRS128ParityBytes {
+		t.Errorf("ToBytes()[3] = %d; want %d (DefaultRS128ParityBytes)",
+			b[3], encoding.DefaultRS128ParityBytes)
+	}
 
-	// Round-trip
+	// Round-trip using current version (v2.08+): RSParityBytes should be set to 8
 	parsed := FlagsFromBytes(b)
 	if !parsed.Paranoid || !parsed.UseKeyfiles || !parsed.KeyfileOrdered ||
 		!parsed.ReedSolomon || !parsed.Padded {
-		t.Error("FlagsFromBytes did not preserve all flags")
+		t.Error("FlagsFromBytes did not preserve all boolean flags")
+	}
+	if parsed.RSParityBytes != encoding.DefaultRS128ParityBytes {
+		t.Errorf("FlagsFromBytes RSParityBytes = %d; want %d",
+			parsed.RSParityBytes, encoding.DefaultRS128ParityBytes)
+	}
+
+	// Custom parity round-trip
+	flagsCustom := Flags{ReedSolomon: true, RSParityBytes: 64}
+	bCustom := flagsCustom.ToBytes()
+	if bCustom[3] != 64 {
+		t.Errorf("ToBytes()[3] with RSParityBytes=64 = %d; want 64", bCustom[3])
+	}
+	parsedCustom := FlagsFromBytes(bCustom)
+	if parsedCustom.RSParityBytes != 64 {
+		t.Errorf("FlagsFromBytes RSParityBytes = %d; want 64", parsedCustom.RSParityBytes)
 	}
 
 	// Test no flags set
@@ -62,6 +84,46 @@ func TestFlags(t *testing.T) {
 		if b[i] != 0 {
 			t.Errorf("Empty flags ToBytes()[%d] = %d; want 0", i, b[i])
 		}
+	}
+}
+
+func TestFlagsFromBytesLegacyCompat(t *testing.T) {
+	// Old volumes stored boolean 1 in flags[3] to mean RS enabled with default parity.
+	// FlagsFromBytes maps this to DefaultRS128ParityBytes.
+	legacy := []byte{0, 0, 0, 1, 0}
+	f := FlagsFromBytes(legacy)
+	if !f.ReedSolomon {
+		t.Error("legacy: flags[3]=1 should set ReedSolomon=true")
+	}
+	if f.RSParityBytes != encoding.DefaultRS128ParityBytes {
+		t.Errorf("legacy: RSParityBytes = %d; want %d", f.RSParityBytes, encoding.DefaultRS128ParityBytes)
+	}
+
+	// flags[3]=0 means RS disabled in all formats.
+	off := []byte{0, 0, 0, 0, 0}
+	fOff := FlagsFromBytes(off)
+	if fOff.ReedSolomon {
+		t.Error("flags[3]=0 should leave ReedSolomon=false")
+	}
+	if fOff.RSParityBytes != 0 {
+		t.Errorf("RSParityBytes = %d; want 0", fOff.RSParityBytes)
+	}
+
+	// flags[3]=8 is the default parity count for new volumes.
+	modern := []byte{0, 0, 0, 8, 0}
+	fModern := FlagsFromBytes(modern)
+	if !fModern.ReedSolomon {
+		t.Error("flags[3]=8 should set ReedSolomon=true")
+	}
+	if fModern.RSParityBytes != 8 {
+		t.Errorf("RSParityBytes = %d; want 8", fModern.RSParityBytes)
+	}
+
+	// flags[3]=64 is a custom parity count.
+	custom := []byte{0, 0, 0, 64, 0}
+	fCustom := FlagsFromBytes(custom)
+	if fCustom.RSParityBytes != 64 {
+		t.Errorf("RSParityBytes = %d; want 64", fCustom.RSParityBytes)
 	}
 }
 

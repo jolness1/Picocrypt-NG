@@ -123,7 +123,8 @@ type OperationContext struct {
 	TempFile   string // Intermediate file path (zip archive or recombined chunks)
 
 	// Volume header - populated during encryption or read during decryption
-	Header *header.VolumeHeader
+	Header    *header.VolumeHeader
+	RawHeader *header.RawHeaderFields // Raw decoded bytes used for MAC verification (decryption only)
 
 	// Cryptographic state
 	Key          []byte               // Argon2-derived key (possibly XORed with keyfile key)

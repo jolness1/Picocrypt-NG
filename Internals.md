@@ -25,10 +25,10 @@ A Picocrypt NG volume's header is encoded with Reed-Solomon by default since it 
 **All offsets and sizes below are in bytes.**
 | Offset | Encoded size | Decoded size | Description
 | ------ | ------------ | ------------ | -----------
-| 0      | 15           | 5            | Version number (ex. "v2.00")
+| 0      | 15           | 5            | Version number (ex. "v2.08")
 | 15     | 15           | 5            | Length of comments, zero-padded to 5 bytes
 | 30     | 3C           | C            | Comments with a length of C characters
-| 30+3C  | 15           | 5            | Flags (paranoid mode, use keyfiles, etc.)
+| 30+3C  | 15           | 5            | Flags — see table below
 | 45+3C  | 48           | 16           | Salt for Argon2
 | 93+3C  | 96           | 32           | Salt for HKDF-SHA3
 | 189+3C | 48           | 16           | IV for Serpent
@@ -37,6 +37,15 @@ A Picocrypt NG volume's header is encoded with Reed-Solomon by default since it 
 | 501+3C | 96           | 32           | SHA3-256 of keyfile key
 | 597+3C | 192          | 64           | Authentication tag (BLAKE2b/HMAC-SHA3)
 | 789+3C |              |              | Encrypted contents of input data
+
+### Flags byte layout
+| Byte index | Description
+| ---------- | -----------
+| flags[0]   | Paranoid mode (0=off, 1=on)
+| flags[1]   | Keyfiles used (0=no, 1=yes)
+| flags[2]   | Keyfile order matters (0=no, 1=yes)
+| flags[3]   | **v2.08+**: RS parity byte count (0=disabled, 1–127=enabled with N bytes); **v2.07 and earlier**: boolean (0=disabled, 1=enabled with default 8-byte parity)
+| flags[4]   | Final RS block was padded (0=no, 1=yes)
 
 ## Header Authentication (v2)
 In v2.00+, the "key hash" field contains an HMAC-SHA3-512 computed over the following header fields (in order):
@@ -80,7 +89,18 @@ If correct order is required, Picocrypt NG will concatenate the keyfiles togethe
 # Reed-Solomon
 By default, all Picocrypt NG volume headers are encoded with Reed-Solomon to improve resiliency against bit rot. The header uses N+2N encoding, where N is the size of a particular header field such as the version number, and 2N is the number of parity bytes added. Using the Berlekamp-Welch algorithm, Picocrypt NG is able to automatically detect and correct up to 2N/2=N broken bytes.
 
-If Reed-Solomon is to be used with the input data itself, the data will be encoded using 128+8 encoding, with the data being read in 1 MiB chunks and encoded in 128-byte blocks, and the final block padded to 128 bytes using PKCS#7.
+If Reed-Solomon is to be used with the input data itself, the data will be encoded using 128+P encoding (where P is the number of parity bytes, default P=8, giving 128+8=136 bytes per block). The data is read in 1 MiB chunks and encoded in 128-byte blocks, with the final block padded to 128 bytes using PKCS#7.
+
+As of **v2.08**, the parity byte count P is stored directly in `flags[3]` of the volume header, so decryption is entirely self-describing — there is no need to remember or re-supply the parity setting. P may be set from 1 to 127, trading file-size overhead for greater corruption tolerance:
+
+| Parity bytes (P) | Size overhead | Errors correctable per 128-byte block |
+| ---------------- | ------------- | -------------------------------------- |
+| 8  (default)     | ~6%           | up to 4                                |
+| 32               | 25%           | up to 16                               |
+| 64               | 50%           | up to 32                               |
+| 127              | ~99%          | up to 63                               |
+
+The header MAC (HMAC-SHA3-512 stored in the key-hash field) covers `flags[3]`, so the parity value is cryptographically authenticated alongside all other header fields.
 
 To address the edge case where the final 128-byte block happens to be padded so that it completes a full 1 MiB chunk, a flag is used to distinguish whether the last 128-byte block was padded originally or if it is just a full 128-byte block of data.
 

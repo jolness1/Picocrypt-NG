@@ -908,6 +908,7 @@ type volumeFlags struct {
 	UseKeyfiles    bool
 	KeyfileOrdered bool
 	ReedSolomon    bool
+	RSParityBytes  int // 0 = disabled; set from flags[3] per version-aware parsing
 	Padded         bool
 }
 
@@ -974,8 +975,16 @@ func (r *headerReaderWrapper) ReadHeader() (*headerReadResult, error) {
 		h.Flags.Paranoid = flagsDec[0] == 1
 		h.Flags.UseKeyfiles = flagsDec[1] == 1
 		h.Flags.KeyfileOrdered = flagsDec[2] == 1
-		h.Flags.ReedSolomon = flagsDec[3] == 1
 		h.Flags.Padded = flagsDec[4] == 1
+		// flags[3]==1 is the legacy boolean for RS enabled (maps to default parity).
+		switch {
+		case flagsDec[3] == 1:
+			h.Flags.RSParityBytes = encoding.DefaultRS128ParityBytes
+			h.Flags.ReedSolomon = true
+		case flagsDec[3] > 1:
+			h.Flags.RSParityBytes = int(flagsDec[3])
+			h.Flags.ReedSolomon = true
+		}
 	}
 
 	// Read salt (48 bytes -> 16 bytes)

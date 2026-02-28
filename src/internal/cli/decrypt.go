@@ -29,6 +29,8 @@ var decryptCmd = &cobra.Command{
 If no password is provided, you will be prompted to enter one interactively.
 The password is hidden while typing.
 
+Reed-Solomon parity is read automatically from the volume header.
+
 Examples:
   # Decrypt interactively (prompts for password)
   Picocrypt-NG decrypt -i secret.pcv

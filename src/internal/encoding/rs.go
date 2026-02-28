@@ -17,14 +17,16 @@ package encoding
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/Picocrypt/infectious"
 )
 
 // Reed-Solomon chunk sizes for payload data (RS128)
 const (
-	RS128DataSize    = 128 // Input chunk size for RS128
-	RS128EncodedSize = 136 // Output chunk size for RS128 (128 + 8 parity)
+	RS128DataSize           = 128 // Input chunk size for RS128
+	RS128EncodedSize        = 136 // Output chunk size for RS128 (128 + 8 parity)
+	DefaultRS128ParityBytes = 8   // Default parity bytes per RS128 block (~6% overhead, corrects up to 4 errors)
 )
 
 // RSCodecs holds pre-initialized Reed-Solomon Forward Error Correction (FEC) codecs.
@@ -90,7 +92,7 @@ func Encode(rs *infectious.FEC, data []byte) []byte {
 // Parameters:
 //   - rs: The Reed-Solomon codec matching the one used for encoding
 //   - data: Encoded data (length must match codec.Total())
-//   - fastDecode: If true AND codec is RS128, skip error correction for speed
+//   - fastDecode: If true, skip error correction and return raw data bytes for speed
 //
 // The fastDecode optimization is critical for performance: during initial decryption,
 // we assume no errors and skip RS processing. If MAC verification fails at the end,
@@ -100,9 +102,10 @@ func Encode(rs *infectious.FEC, data []byte) []byte {
 //   - Decoded data (original bytes without parity)
 //   - Error if too many bytes are corrupted to recover (returns partial data anyway)
 func Decode(rs *infectious.FEC, data []byte, fastDecode bool) ([]byte, error) {
-	// Fast decode optimization: skip RS decoding for payload data
-	if rs.Total() == 136 && fastDecode {
-		return data[:128], nil
+	// Fast decode: skip error correction, return raw data bytes directly.
+	// Callers only pass fastDecode=true for bulk payload codecs.
+	if fastDecode {
+		return data[:rs.Required()], nil
 	}
 
 	tmp := make([]infectious.Share, rs.Total())
@@ -114,12 +117,36 @@ func Decode(rs *infectious.FEC, data []byte, fastDecode bool) ([]byte, error) {
 
 	// Force decode the data but return the error as well
 	if err != nil {
-		if rs.Total() == 136 {
-			return data[:128], err
-		}
-		return data[:rs.Total()/3], err
+		return data[:rs.Required()], err
 	}
 
 	// No issues, return the decoded data
 	return res, nil
+}
+
+// NewRSCodecsWithPayloadParity creates a codec set identical to NewRSCodecs but
+// overrides the payload codec (RS128) to use parityBytes parity bytes per
+// RS128DataSize-byte data block instead of the default 8.
+//
+// This allows trading file-size overhead for greater corruption tolerance:
+//   - parityBytes=8   (~6% overhead, default) - corrects up to 4 byte errors/block
+//   - parityBytes=64  (50% overhead)           - corrects up to 32 byte errors/block
+//   - parityBytes=127 (~99% overhead, maximum) - corrects up to 63 byte errors/block
+//
+// parityBytes must be in [1, 127]. The value is stored in the volume header and
+// read back automatically during decryption.
+func NewRSCodecsWithPayloadParity(parityBytes int) (*RSCodecs, error) {
+	if parityBytes < 1 || parityBytes > 127 {
+		return nil, fmt.Errorf("parityBytes must be in [1, 127], got %d", parityBytes)
+	}
+	base, err := NewRSCodecs()
+	if err != nil {
+		return nil, err
+	}
+	rs128custom, err := infectious.NewFEC(RS128DataSize, RS128DataSize+parityBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize custom RS128 codec: %w", err)
+	}
+	base.RS128 = rs128custom
+	return base, nil
 }

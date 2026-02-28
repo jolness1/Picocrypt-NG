@@ -45,6 +45,20 @@ CGO_ENABLED=1 go build -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
 CGO_ENABLED=1 go build -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli ./cmd/picocrypt
 ```
 
+### Running Without Installing (Development)
+
+Use `go run` to run the CLI directly from source — no build step or install required:
+
+```bash
+cd src/
+
+# CLI-only (no graphics dependencies — recommended for scripting/testing)
+go run -tags cli ./cmd/picocrypt encrypt -i file.txt -p "password"
+
+# If CGO is needed (GUI+CLI build)
+CGO_ENABLED=1 go run ./cmd/picocrypt encrypt -i file.txt -p "password"
+```
+
 ## Build Modes
 
 Picocrypt NG offers two build configurations:
@@ -95,9 +109,21 @@ At least one of `--password` or `--keyfile` must be provided.
 |------|------|---------|-------------|
 | `--comments` | string | | Comments to store in header (NOT encrypted) |
 | `--paranoid` | bool | false | Enable Serpent-CTR + XChaCha20 cascade with HMAC-SHA3 |
-| `--reed-solomon` | bool | false | Enable Reed-Solomon error correction (6% size overhead) |
+| `--reed-solomon` | bool | false | Enable Reed-Solomon error correction (~6% overhead by default) |
+| `--rs-parity` | int | 0 | Reed-Solomon parity overhead percentage (1–99; 0 = default ~6%); requires `--reed-solomon` |
 | `--deniability` | bool | false | Add deniability wrapper for plausible deniability |
 | `--compress` | bool | false | Compress files before encryption |
+
+##### Reed-Solomon Parity Levels
+
+`--rs-parity` specifies the overhead as a percentage of the 128-byte data block size. The value is stored in the volume header, so no flag is needed at decryption time.
+
+| `--rs-parity` | Parity bytes / block | Size overhead | Errors correctable / block |
+|--------------|---------------------|---------------|----------------------------|
+| 0 (default)  | 8                   | ~6%           | up to 4                    |
+| 25           | 32                  | 25%           | up to 16                   |
+| 50           | 64                  | 50%           | up to 32                   |
+| 99           | 127 (maximum)       | ~99%          | up to 63                   |
 
 #### Split Output Flags
 
@@ -186,9 +212,17 @@ picocrypt encrypt -i "*.jpg" -i "*.png" -o images.pcv -p "password"
 ### Security Options
 
 ```bash
-# Paranoid mode with Reed-Solomon error correction
+# Paranoid mode with Reed-Solomon error correction (default 6% overhead)
 picocrypt encrypt -i sensitive.db -o sensitive.pcv -p "password" \
     --paranoid --reed-solomon
+
+# Maximum Reed-Solomon redundancy (~99% overhead, corrects up to 63 byte errors/block)
+picocrypt encrypt -i critical.db -o critical.pcv -p "password" \
+    --reed-solomon --rs-parity 99
+
+# Medium redundancy (50% overhead, corrects up to 32 byte errors/block)
+picocrypt encrypt -i archive.tar -o archive.pcv -p "password" \
+    --reed-solomon --rs-parity 50
 
 # Add keyfile for two-factor authentication
 picocrypt encrypt -i data.zip -o data.pcv -p "password" -k keyfile.key

@@ -51,11 +51,22 @@ type Flags struct {
 	Paranoid       bool // flags[0]: Paranoid mode (8 Argon2 passes, HMAC-SHA3)
 	UseKeyfiles    bool // flags[1]: Keyfiles were used for encryption
 	KeyfileOrdered bool // flags[2]: Keyfile order matters
-	ReedSolomon    bool // flags[3]: Full Reed-Solomon encoding on payload
+	ReedSolomon    bool // flags[3]: Full Reed-Solomon encoding on payload (derived from RSParityBytes)
 	Padded         bool // flags[4]: Final block was padded (RS internals)
+
+	// RSParityBytes is the number of Reed-Solomon parity bytes per RS128-DataSize block.
+	// 0 means RS is disabled. When reading a header this is set to the exact parity value
+	// stored during encryption (old volumes that stored a boolean 1 map to DefaultRS128ParityBytes).
+	//
+	// When writing (ToBytes), if ReedSolomon is true and RSParityBytes is 0 the default
+	// (encoding.DefaultRS128ParityBytes) is used.
+	RSParityBytes int
 }
 
-// ToBytes converts Flags to 5-byte slice for encoding
+// ToBytes converts Flags to 5-byte slice for encoding.
+//
+// flags[3] encodes the RS parity byte count (0 = disabled, 2-127 = parity bytes).
+// When ReedSolomon is true but RSParityBytes is 0, DefaultRS128ParityBytes is written.
 func (f *Flags) ToBytes() []byte {
 	b := make([]byte, 5)
 	if f.Paranoid {
@@ -68,7 +79,11 @@ func (f *Flags) ToBytes() []byte {
 		b[2] = 1
 	}
 	if f.ReedSolomon {
-		b[3] = 1
+		parity := f.RSParityBytes
+		if parity == 0 {
+			parity = encoding.DefaultRS128ParityBytes
+		}
+		b[3] = byte(parity)
 	}
 	if f.Padded {
 		b[4] = 1
@@ -76,18 +91,36 @@ func (f *Flags) ToBytes() []byte {
 	return b
 }
 
-// FlagsFromBytes parses a 5-byte slice into Flags
+// FlagsFromBytes parses a 5-byte slice into Flags.
+//
+// flags[3] encodes the RS parity byte count:
+//   - 0 = RS disabled
+//   - 1 = RS enabled with DefaultRS128ParityBytes; backward-compatible with old volumes
+//     where flags[3] was a boolean (0=off, 1=on with default parity)
+//   - 2-127 = RS enabled with N parity bytes per RS128 data block
 func FlagsFromBytes(b []byte) Flags {
 	if len(b) < 5 {
 		return Flags{}
 	}
-	return Flags{
+	f := Flags{
 		Paranoid:       b[0] == 1,
 		UseKeyfiles:    b[1] == 1,
 		KeyfileOrdered: b[2] == 1,
-		ReedSolomon:    b[3] == 1,
 		Padded:         b[4] == 1,
 	}
+	switch {
+	case b[3] == 0:
+		// RS disabled
+	case b[3] == 1:
+		// Old volumes stored boolean 1 meaning "RS on, use default parity".
+		// New volumes always write the actual parity count (minimum 8), so 1 is unambiguous.
+		f.RSParityBytes = encoding.DefaultRS128ParityBytes
+		f.ReedSolomon = true
+	default:
+		f.RSParityBytes = int(b[3])
+		f.ReedSolomon = true
+	}
+	return f
 }
 
 // VolumeHeader contains all header fields for a Picocrypt volume

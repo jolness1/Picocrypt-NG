@@ -177,18 +177,27 @@ func encryptGenerateValues(ctx *OperationContext, req *EncryptRequest) error {
 	ctx.Total = stat.Size()
 
 	// Determine if padding is needed (RS internals)
-	// Padding is required when the last partial block would leave fewer than RS128DataSize
-	// bytes after RS128 encoding chunks are filled.
-	ctx.Padded = ctx.Total%int64(util.MiB) >= int64(util.MiB)-encoding.RS128DataSize
+	// Padding is required when the last partial block would leave fewer than one full data
+	// chunk after RS128 encoding chunks are filled.
+	ctx.Padded = ctx.Total%int64(util.MiB) >= int64(util.MiB)-int64(req.RSCodecs.RS128.Required())
 
 	// Create header
 	ctx.Header = header.NewVolumeHeader(salt, hkdfSalt, serpentIV, nonce)
 	ctx.Header.Comments = req.Comments
+
+	// Compute the actual RS parity byte count from the codec so it can be self-described
+	// in the header.  We only store a non-zero value when RS is actually enabled; that
+	// way the header's flags[3] == 0 unambiguously means "no Reed-Solomon".
+	var rsParityBytes int
+	if req.ReedSolomon {
+		rsParityBytes = req.RSCodecs.RS128.Total() - req.RSCodecs.RS128.Required()
+	}
 	ctx.Header.Flags = header.Flags{
 		Paranoid:       req.Paranoid,
 		UseKeyfiles:    len(req.Keyfiles) > 0,
 		KeyfileOrdered: req.KeyfileOrdered,
 		ReedSolomon:    req.ReedSolomon,
+		RSParityBytes:  rsParityBytes,
 		Padded:         ctx.Padded,
 	}
 
@@ -485,36 +494,38 @@ func cleanupEncrypt(ctx *OperationContext, req *EncryptRequest) {
 
 // encodeWithRS encodes data with Reed-Solomon (rs128)
 // For partial blocks (< 1 MiB), this ALWAYS adds a padding chunk, even if data
-// is exactly divisible by 128, because the original Picocrypt always unpads
+// is exactly divisible by dataSize, because the original Picocrypt always unpads
 // the last chunk of partial blocks.
 func encodeWithRS(data []byte, rs *encoding.RSCodecs) []byte {
-	// Pre-allocate result slice to avoid repeated reallocations
-	// Each RS128DataSize-byte input chunk becomes RS128EncodedSize bytes (128 data + 8 parity)
-	// For partial blocks, we add one more chunk for padding
-	chunks := (len(data) + encoding.RS128DataSize - 1) / encoding.RS128DataSize
+	dataSize := rs.RS128.Required()
+	encodedSize := rs.RS128.Total()
+
+	// Pre-allocate result slice to avoid repeated reallocations.
+	// For partial blocks, we add one more chunk for padding.
+	chunks := (len(data) + dataSize - 1) / dataSize
 	if len(data) < util.MiB {
 		chunks++ // Extra chunk for padding in partial blocks
 	}
-	result := make([]byte, 0, chunks*encoding.RS128EncodedSize)
+	result := make([]byte, 0, chunks*encodedSize)
 
 	// Full 1 MiB block - no padding needed within the block
 	if len(data) == util.MiB {
-		for i := 0; i < util.MiB; i += encoding.RS128DataSize {
-			result = append(result, encoding.Encode(rs.RS128, data[i:i+encoding.RS128DataSize])...)
+		for i := 0; i < util.MiB; i += dataSize {
+			result = append(result, encoding.Encode(rs.RS128, data[i:i+dataSize])...)
 		}
 		return result
 	}
 
 	// Partial block (< 1 MiB) - need to handle padding
-	// Encode full 128-byte chunks
-	fullChunks := len(data) / encoding.RS128DataSize
+	// Encode full dataSize-byte chunks
+	fullChunks := len(data) / dataSize
 	for i := 0; i < fullChunks; i++ {
-		result = append(result, encoding.Encode(rs.RS128, data[i*encoding.RS128DataSize:(i+1)*encoding.RS128DataSize])...)
+		result = append(result, encoding.Encode(rs.RS128, data[i*dataSize:(i+1)*dataSize])...)
 	}
 
 	// ALWAYS add a padded chunk for partial blocks (matches original line 2071-2072)
 	// This is because decryption always unpads the last chunk of partial blocks
-	remaining := data[fullChunks*encoding.RS128DataSize:]
+	remaining := data[fullChunks*dataSize:]
 	result = append(result, encoding.Encode(rs.RS128, encoding.Pad(remaining))...)
 
 	return result

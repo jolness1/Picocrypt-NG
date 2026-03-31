@@ -108,10 +108,10 @@ func FlagsFromBytes(b []byte) Flags {
 		KeyfileOrdered: b[2] == 1,
 		Padded:         b[4] == 1,
 	}
-	switch {
-	case b[3] == 0:
+	switch b[3] {
+	case 0:
 		// RS disabled
-	case b[3] == 1:
+	case 1:
 		// Old volumes stored boolean 1 meaning "RS on, use default parity".
 		// New volumes always write the actual parity count (minimum 8), so 1 is unambiguous.
 		f.RSParityBytes = encoding.DefaultRS128ParityBytes

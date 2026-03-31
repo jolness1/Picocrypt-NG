@@ -122,10 +122,10 @@ var goldenCompressedTestCases = []struct {
 }
 
 var goldenKeyfileTestCases = []struct {
-	name          string
-	file          string
-	password      string
-	keyfiles      []string
+	name           string
+	file           string
+	password       string
+	keyfiles       []string
 	keyfileOrdered bool
 }{
 	{
@@ -542,7 +542,7 @@ func TestGoldenKeyfileHeaderFlags(t *testing.T) {
 	}
 
 	testCases := []struct {
-		file          string
+		file           string
 		keyfileOrdered bool
 	}{
 		{file: "pico_test_v2_keyfile_single.txt.pcv", keyfileOrdered: false},

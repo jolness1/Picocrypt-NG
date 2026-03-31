@@ -231,3 +231,103 @@ func TestRSAllCodecsRoundtrip(t *testing.T) {
 		})
 	}
 }
+
+func TestNewRSCodecsWithPayloadParity(t *testing.T) {
+	t.Run("valid parity values", func(t *testing.T) {
+		for _, parity := range []int{1, 8, 64, 127} {
+			codecs, err := NewRSCodecsWithPayloadParity(parity)
+			if err != nil {
+				t.Fatalf("NewRSCodecsWithPayloadParity(%d) failed: %v", parity, err)
+			}
+			if codecs.RS128.Required() != RS128DataSize {
+				t.Errorf("parity=%d: Required()=%d; want %d", parity, codecs.RS128.Required(), RS128DataSize)
+			}
+			if codecs.RS128.Total() != RS128DataSize+parity {
+				t.Errorf("parity=%d: Total()=%d; want %d", parity, codecs.RS128.Total(), RS128DataSize+parity)
+			}
+			// Header codecs should remain unchanged
+			if codecs.RS5.Total() != 15 {
+				t.Errorf("parity=%d: RS5 should be unchanged, got Total()=%d", parity, codecs.RS5.Total())
+			}
+		}
+	})
+
+	t.Run("invalid parity values", func(t *testing.T) {
+		for _, parity := range []int{0, -1, 128, 256} {
+			_, err := NewRSCodecsWithPayloadParity(parity)
+			if err == nil {
+				t.Errorf("NewRSCodecsWithPayloadParity(%d) should have failed", parity)
+			}
+		}
+	})
+
+	t.Run("default parity matches NewRSCodecs", func(t *testing.T) {
+		defaults, err := NewRSCodecs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		custom, err := NewRSCodecsWithPayloadParity(DefaultRS128ParityBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if defaults.RS128.Total() != custom.RS128.Total() {
+			t.Errorf("default Total=%d != custom Total=%d", defaults.RS128.Total(), custom.RS128.Total())
+		}
+	})
+
+	t.Run("encode decode roundtrip with custom parity", func(t *testing.T) {
+		for _, parity := range []int{1, 16, 64, 127} {
+			codecs, err := NewRSCodecsWithPayloadParity(parity)
+			if err != nil {
+				t.Fatalf("parity=%d: init failed: %v", parity, err)
+			}
+
+			data := make([]byte, RS128DataSize)
+			for i := range data {
+				data[i] = byte(i)
+			}
+
+			encoded := Encode(codecs.RS128, data)
+			if len(encoded) != RS128DataSize+parity {
+				t.Errorf("parity=%d: encoded length=%d; want %d", parity, len(encoded), RS128DataSize+parity)
+			}
+
+			decoded, err := Decode(codecs.RS128, encoded, false)
+			if err != nil {
+				t.Fatalf("parity=%d: Decode failed: %v", parity, err)
+			}
+			if !bytes.Equal(decoded, data) {
+				t.Errorf("parity=%d: decoded data does not match original", parity)
+			}
+		}
+	})
+
+	t.Run("error correction with custom parity", func(t *testing.T) {
+		codecs, err := NewRSCodecsWithPayloadParity(64) // 50% overhead, corrects up to 32 errors
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		data := make([]byte, RS128DataSize)
+		for i := range data {
+			data[i] = byte(i * 7)
+		}
+
+		encoded := Encode(codecs.RS128, data)
+		corrupted := make([]byte, len(encoded))
+		copy(corrupted, encoded)
+
+		// Corrupt 30 bytes (within correction threshold of 32)
+		for i := 0; i < 30; i++ {
+			corrupted[i] ^= 0xFF
+		}
+
+		decoded, err := Decode(codecs.RS128, corrupted, false)
+		if err != nil {
+			t.Fatalf("Decode with 30 corrupted bytes failed: %v", err)
+		}
+		if !bytes.Equal(decoded, data) {
+			t.Error("Decode did not recover original data after corruption")
+		}
+	})
+}

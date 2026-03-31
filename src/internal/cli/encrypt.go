@@ -151,6 +151,12 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	if useStdin && encPasswordStdin {
 		return fmt.Errorf("cannot use -P (password from stdin) with -i - (input from stdin)")
 	}
+	if encRSParity != 0 && !encReedSolomon {
+		return fmt.Errorf("--rs-parity requires --reed-solomon")
+	}
+	if encRSParity < 0 || encRSParity > 99 {
+		return fmt.Errorf("--rs-parity must be between 1 and 99 (got %d)", encRSParity)
+	}
 	if (useStdin || useStdout) && encSplit {
 		return fmt.Errorf("stdin/stdout not compatible with --split")
 	}

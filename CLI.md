@@ -493,7 +493,7 @@ Ensure all chunk files are in the same directory before decryption.
 ### Performance Tips
 
 - Use `--quiet` mode for faster operation (no terminal output overhead)
-- For large files, Reed-Solomon adds 6% size overhead but enables error recovery
+- For large files, Reed-Solomon adds ~6% size overhead by default but enables error recovery; use `--rs-parity` to increase protection at the cost of more overhead
 - Paranoid mode doubles encryption time due to cascade cipher
 - `--verify-first` doubles decryption time but ensures integrity before writing output
 

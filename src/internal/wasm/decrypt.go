@@ -33,13 +33,13 @@ func DecryptVolume(volumeData []byte, password string) ([]byte, int) {
 	// Create reader from volume data
 	reader := bytes.NewReader(volumeData)
 
-	// Read header
+	// Read header (use ReadHeaderRaw to preserve exact bytes for MAC verification)
 	headerReader := header.NewReader(reader, rsCodecs)
-	result, err := headerReader.ReadHeader()
+	rawResult, err := headerReader.ReadHeaderRaw()
 	if err != nil {
 		return nil, ErrCorruptedHeader
 	}
-	hdr := result.Header
+	hdr := rawResult.Header
 
 	// Check for unsupported features
 	if hdr.Flags.UseKeyfiles {
@@ -82,8 +82,8 @@ func DecryptVolume(volumeData []byte, password string) ([]byte, int) {
 		}
 		defer crypto.SecureZero(subkeyHeader)
 
-		// Verify header MAC
-		authResult := header.VerifyV2Header(subkeyHeader, hdr, keyfileHash)
+		// Verify header MAC using raw decoded bytes for backward compatibility
+		authResult := header.VerifyV2HeaderRaw(subkeyHeader, rawResult.Raw, hdr, keyfileHash)
 		if !authResult.Valid {
 			return nil, ErrWrongPassword
 		}
@@ -132,6 +132,21 @@ func DecryptVolume(volumeData []byte, password string) ([]byte, int) {
 
 	// Read payload from remaining bytes
 	payload := volumeData[headerSize:]
+
+	// Reconfigure RS codec from header parity if needed
+	if hdr.Flags.ReedSolomon {
+		rsParityBytes := hdr.Flags.RSParityBytes
+		if rsParityBytes == 0 {
+			rsParityBytes = encoding.DefaultRS128ParityBytes
+		}
+		currentParity := rsCodecs.RS128.Total() - rsCodecs.RS128.Required()
+		if rsParityBytes != currentParity {
+			rsCodecs, err = encoding.NewRSCodecsWithPayloadParity(rsParityBytes)
+			if err != nil {
+				return nil, ErrCorruptedHeader
+			}
+		}
+	}
 
 	// Decrypt payload
 	reedsolo := hdr.Flags.ReedSolomon
@@ -195,8 +210,10 @@ func decryptPlainPayload(payload []byte, cs *crypto.CipherSuite, counter *int64)
 func decryptRSPayload(payload []byte, cs *crypto.CipherSuite, rsCodecs *encoding.RSCodecs, padded bool, counter *int64) ([]byte, error) {
 	plaintext := make([]byte, 0, len(payload))
 
-	// RS128 encoded chunk size for 1 MiB of data
-	fullBlockEncodedSize := util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize
+	// RS128 encoded chunk size for 1 MiB of data (dynamic based on codec parity)
+	dataSize := rsCodecs.RS128.Required()
+	encodedSize := rsCodecs.RS128.Total()
+	fullBlockEncodedSize := util.MiB / dataSize * encodedSize
 
 	for offset := 0; offset < len(payload); {
 		// Determine chunk size
@@ -240,22 +257,23 @@ func decryptRSPayload(payload []byte, cs *crypto.CipherSuite, rsCodecs *encoding
 // decodeRSChunk decodes RS128-encoded data
 func decodeRSChunk(data []byte, rs *encoding.RSCodecs, isLast, padded bool) ([]byte, error) {
 	var result []byte
-	fullBlockEncodedSize := util.MiB / encoding.RS128DataSize * encoding.RS128EncodedSize
+	encodedSize := rs.RS128.Total()
+	fullBlockEncodedSize := util.MiB / rs.RS128.Required() * encodedSize
 
 	// Full 1 MiB block
 	if len(data) == fullBlockEncodedSize {
-		for i := 0; i < fullBlockEncodedSize; i += encoding.RS128EncodedSize {
-			decoded, err := encoding.Decode(rs.RS128, data[i:i+encoding.RS128EncodedSize], true) // fast decode
+		for i := 0; i < fullBlockEncodedSize; i += encodedSize {
+			decoded, err := encoding.Decode(rs.RS128, data[i:i+encodedSize], true) // fast decode
 			if err != nil {
 				// Try with error correction
-				decoded, err = encoding.Decode(rs.RS128, data[i:i+encoding.RS128EncodedSize], false)
+				decoded, err = encoding.Decode(rs.RS128, data[i:i+encodedSize], false)
 				if err != nil {
 					return nil, err
 				}
 			}
 
 			// Unpad last chunk if needed
-			if isLast && i == fullBlockEncodedSize-encoding.RS128EncodedSize && padded {
+			if isLast && i == fullBlockEncodedSize-encodedSize && padded {
 				decoded = encoding.Unpad(decoded)
 			}
 
@@ -263,15 +281,15 @@ func decodeRSChunk(data []byte, rs *encoding.RSCodecs, isLast, padded bool) ([]b
 		}
 	} else {
 		// Partial block
-		if len(data) < encoding.RS128EncodedSize {
+		if len(data) < encodedSize {
 			return nil, io.ErrUnexpectedEOF
 		}
 
-		chunks := len(data)/encoding.RS128EncodedSize - 1
+		chunks := len(data)/encodedSize - 1
 		for i := 0; i < chunks; i++ {
-			decoded, err := encoding.Decode(rs.RS128, data[i*encoding.RS128EncodedSize:(i+1)*encoding.RS128EncodedSize], true)
+			decoded, err := encoding.Decode(rs.RS128, data[i*encodedSize:(i+1)*encodedSize], true)
 			if err != nil {
-				decoded, err = encoding.Decode(rs.RS128, data[i*encoding.RS128EncodedSize:(i+1)*encoding.RS128EncodedSize], false)
+				decoded, err = encoding.Decode(rs.RS128, data[i*encodedSize:(i+1)*encodedSize], false)
 				if err != nil {
 					return nil, err
 				}
@@ -280,10 +298,14 @@ func decodeRSChunk(data []byte, rs *encoding.RSCodecs, isLast, padded bool) ([]b
 		}
 
 		// Last chunk (always unpad for partial blocks)
-		lastChunkStart := chunks * encoding.RS128EncodedSize
-		decoded, err := encoding.Decode(rs.RS128, data[lastChunkStart:lastChunkStart+encoding.RS128EncodedSize], true)
+		lastChunkStart := chunks * encodedSize
+		lastChunkEnd := lastChunkStart + encodedSize
+		if lastChunkEnd > len(data) {
+			lastChunkEnd = len(data)
+		}
+		decoded, err := encoding.Decode(rs.RS128, data[lastChunkStart:lastChunkEnd], true)
 		if err != nil {
-			decoded, err = encoding.Decode(rs.RS128, data[lastChunkStart:lastChunkStart+encoding.RS128EncodedSize], false)
+			decoded, err = encoding.Decode(rs.RS128, data[lastChunkStart:lastChunkEnd], false)
 			if err != nil {
 				return nil, err
 			}

@@ -195,6 +195,56 @@ func TestEncryptValidation(t *testing.T) {
 		// Reset
 		encKeyfiles = nil
 	})
+
+	t.Run("rs-parity without reed-solomon", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "test.txt")
+		if err := os.WriteFile(tmpFile, []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		encInput = []string{tmpFile}
+		encPassword = "test"
+		encReedSolomon = false
+		encRSParity = 50
+
+		cmd := encryptCmd
+		err := cmd.RunE(cmd, []string{})
+		if err == nil {
+			t.Error("expected error for --rs-parity without --reed-solomon")
+		}
+		if !strings.Contains(err.Error(), "--rs-parity requires --reed-solomon") {
+			t.Errorf("error should mention --rs-parity requires --reed-solomon: %v", err)
+		}
+
+		// Reset
+		encRSParity = 0
+		encReedSolomon = false
+	})
+
+	t.Run("rs-parity out of range", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "test.txt")
+		if err := os.WriteFile(tmpFile, []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		encInput = []string{tmpFile}
+		encPassword = "test"
+		encReedSolomon = true
+		encRSParity = 100
+
+		cmd := encryptCmd
+		err := cmd.RunE(cmd, []string{})
+		if err == nil {
+			t.Error("expected error for --rs-parity=100")
+		}
+		if !strings.Contains(err.Error(), "--rs-parity must be between") {
+			t.Errorf("error should mention range: %v", err)
+		}
+
+		// Reset
+		encRSParity = 0
+		encReedSolomon = false
+	})
 }
 
 func TestDecryptValidation(t *testing.T) {

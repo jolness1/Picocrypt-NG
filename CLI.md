@@ -45,20 +45,6 @@ CGO_ENABLED=1 go build -ldflags="-s -w" -o Picocrypt-NG ./cmd/picocrypt
 CGO_ENABLED=1 go build -tags cli -ldflags="-s -w" -o Picocrypt-NG-cli ./cmd/picocrypt
 ```
 
-### Running Without Installing (Development)
-
-Use `go run` to run the CLI directly from source — no build step or install required:
-
-```bash
-cd src/
-
-# CLI-only (no graphics dependencies — recommended for scripting/testing)
-go run -tags cli ./cmd/picocrypt encrypt -i file.txt -p "password"
-
-# If CGO is needed (GUI+CLI build)
-CGO_ENABLED=1 go run ./cmd/picocrypt encrypt -i file.txt -p "password"
-```
-
 ## Build Modes
 
 Picocrypt NG offers two build configurations:

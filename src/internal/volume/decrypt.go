@@ -41,8 +41,9 @@ func Decrypt(ctx context.Context, req *DecryptRequest) error {
 	}
 
 	// Phase 2.5: Configure RS codec from header
-	// flags[3] is always self-describing: old volumes stored a boolean (1=default parity),
-	// new volumes store the exact byte count. FlagsFromBytes normalizes both cases.
+	// flags[3] encodes parity as: 0=disabled, 1=default parity (legacy sentinel used by
+	// both old volumes and new volumes with default parity), 2-127=custom parity bytes.
+	// FlagsFromBytes normalizes all cases into RSParityBytes.
 	if err := decryptSetupCodecs(opCtx, req); err != nil {
 		cleanupDecrypt(opCtx, req)
 		return err

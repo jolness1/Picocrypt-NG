@@ -377,8 +377,8 @@ func runEncrypt(cmd *cobra.Command, args []string) error {
 	}
 	if encReedSolomon && encRSParity > 0 {
 		parityBytes := (encoding.RS128DataSize*encRSParity + 50) / 100
-		if parityBytes < 1 {
-			parityBytes = 1
+		if parityBytes < 2 {
+			parityBytes = 2
 		} else if parityBytes > 127 {
 			parityBytes = 127
 		}

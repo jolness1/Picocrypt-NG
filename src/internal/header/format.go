@@ -58,15 +58,26 @@ type Flags struct {
 	// 0 means RS is disabled. When reading a header this is set to the exact parity value
 	// stored during encryption (old volumes that stored a boolean 1 map to DefaultRS128ParityBytes).
 	//
-	// When writing (ToBytes), if ReedSolomon is true and RSParityBytes is 0 the default
-	// (encoding.DefaultRS128ParityBytes) is used.
+	// When writing (ToBytes), if ReedSolomon is true and RSParityBytes is 0 or equal to
+	// DefaultRS128ParityBytes, flags[3] is written as 1 (the legacy sentinel) so that old
+	// binaries can still read the volume. Custom parity values (2-127, excluding 8) are
+	// written directly.
 	RSParityBytes int
 }
 
 // ToBytes converts Flags to 5-byte slice for encoding.
 //
-// flags[3] encodes the RS parity byte count (0 = disabled, 2-127 = parity bytes).
-// When ReedSolomon is true but RSParityBytes is 0, DefaultRS128ParityBytes is written.
+// flags[3] encodes the RS parity setting:
+//   - 0 = RS disabled
+//   - 1 = RS enabled with default parity (backward-compatible with old binaries
+//     that interpret flags[3] as a boolean)
+//   - 2-127 = RS enabled with N custom parity bytes per RS128 data block
+//
+// When ReedSolomon is true and RSParityBytes is 0 or equal to
+// DefaultRS128ParityBytes (8), flags[3] is written as 1 to preserve
+// backward compatibility. Custom parity values are written directly.
+// Value 1 is reserved as a legacy value and must never be used
+// as an actual parity byte count.
 func (f *Flags) ToBytes() []byte {
 	b := make([]byte, 5)
 	if f.Paranoid {
@@ -80,10 +91,12 @@ func (f *Flags) ToBytes() []byte {
 	}
 	if f.ReedSolomon {
 		parity := f.RSParityBytes
-		if parity == 0 {
-			parity = encoding.DefaultRS128ParityBytes
+		if parity == 0 || parity == encoding.DefaultRS128ParityBytes {
+			// Legacy encoding: write 1 so old binaries see "RS enabled"
+			b[3] = 1
+		} else {
+			b[3] = byte(parity)
 		}
-		b[3] = byte(parity)
 	}
 	if f.Padded {
 		b[4] = 1
@@ -112,8 +125,9 @@ func FlagsFromBytes(b []byte) Flags {
 	case 0:
 		// RS disabled
 	case 1:
-		// Old volumes stored boolean 1 meaning "RS on, use default parity".
-		// New volumes always write the actual parity count (minimum 8), so 1 is unambiguous.
+		// Legacy sentinel: both old volumes (which stored a boolean) and new volumes
+		// encrypted with default parity write flags[3]=1. Custom parity (>=2) is always
+		// stored as the actual byte count, so 1 is unambiguously "RS on, default parity".
 		f.RSParityBytes = encoding.DefaultRS128ParityBytes
 		f.ReedSolomon = true
 	default:

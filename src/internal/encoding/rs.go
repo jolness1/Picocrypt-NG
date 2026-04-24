@@ -133,11 +133,13 @@ func Decode(rs *infectious.FEC, data []byte, fastDecode bool) ([]byte, error) {
 //   - parityBytes=64  (50% overhead)           - corrects up to 32 byte errors/block
 //   - parityBytes=127 (~99% overhead, maximum) - corrects up to 63 byte errors/block
 //
-// parityBytes must be in [1, 127]. The value is stored in the volume header and
+// parityBytes must be in [2, 127]. Value 1 is reserved as the legacy sentinel
+// in the volume header (meaning "default parity") and must not be used as an
+// actual parity byte count. The value is stored in the volume header and
 // read back automatically during decryption.
 func NewRSCodecsWithPayloadParity(parityBytes int) (*RSCodecs, error) {
-	if parityBytes < 1 || parityBytes > 127 {
-		return nil, fmt.Errorf("parityBytes must be in [1, 127], got %d", parityBytes)
+	if parityBytes < 2 || parityBytes > 127 {
+		return nil, fmt.Errorf("parityBytes must be in [2, 127], got %d", parityBytes)
 	}
 	base, err := NewRSCodecs()
 	if err != nil {

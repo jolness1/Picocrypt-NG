@@ -49,13 +49,14 @@ func TestFlags(t *testing.T) {
 			t.Errorf("ToBytes()[%d] = %d; want 1", i, b[i])
 		}
 	}
-	// flags[3] is now the parity byte count, not a boolean 1
-	if b[3] != encoding.DefaultRS128ParityBytes {
-		t.Errorf("ToBytes()[3] = %d; want %d (DefaultRS128ParityBytes)",
-			b[3], encoding.DefaultRS128ParityBytes)
+	// flags[3] uses legacy encoding (1) for default parity to maintain
+	// backward compatibility with old binaries
+	if b[3] != 1 {
+		t.Errorf("ToBytes()[3] = %d; want 1 (legacy encoding for default RS parity)",
+			b[3])
 	}
 
-	// Round-trip using current version (v2.08+): RSParityBytes should be set to 8
+	// Round-trip: FlagsFromBytes(1) maps to DefaultRS128ParityBytes
 	parsed := FlagsFromBytes(b)
 	if !parsed.Paranoid || !parsed.UseKeyfiles || !parsed.KeyfileOrdered ||
 		!parsed.ReedSolomon || !parsed.Padded {
@@ -124,6 +125,73 @@ func TestFlagsFromBytesLegacyCompat(t *testing.T) {
 	fCustom := FlagsFromBytes(custom)
 	if fCustom.RSParityBytes != 64 {
 		t.Errorf("RSParityBytes = %d; want 64", fCustom.RSParityBytes)
+	}
+
+	// flags[3]=2 is the minimum custom parity count (1 is reserved as legacy sentinel).
+	minCustom := []byte{0, 0, 0, 2, 0}
+	fMin := FlagsFromBytes(minCustom)
+	if !fMin.ReedSolomon {
+		t.Error("flags[3]=2 should set ReedSolomon=true")
+	}
+	if fMin.RSParityBytes != 2 {
+		t.Errorf("RSParityBytes = %d; want 2", fMin.RSParityBytes)
+	}
+}
+
+// TestFlagsDefaultRSWritesLegacyByte verifies that default RS always writes
+// flags[3]=1 (the legacy boolean) so old binaries can read the volume.
+func TestFlagsDefaultRSWritesLegacyByte(t *testing.T) {
+	tests := []struct {
+		name       string
+		flags      Flags
+		wantFlags3 byte
+		desc       string
+	}{
+		{
+			name:       "RS=true, parity=0 (default)",
+			flags:      Flags{ReedSolomon: true, RSParityBytes: 0},
+			wantFlags3: 1,
+			desc:       "default RS should write legacy byte 1",
+		},
+		{
+			name:       "RS=true, parity=8 (explicit default)",
+			flags:      Flags{ReedSolomon: true, RSParityBytes: encoding.DefaultRS128ParityBytes},
+			wantFlags3: 1,
+			desc:       "explicit default parity should write legacy byte 1",
+		},
+		{
+			name:       "RS=true, parity=64 (custom)",
+			flags:      Flags{ReedSolomon: true, RSParityBytes: 64},
+			wantFlags3: 64,
+			desc:       "custom parity should write actual byte count",
+		},
+		{
+			name:       "RS=true, parity=2 (minimum custom)",
+			flags:      Flags{ReedSolomon: true, RSParityBytes: 2},
+			wantFlags3: 2,
+			desc:       "minimum custom parity should write 2",
+		},
+		{
+			name:       "RS=true, parity=127 (maximum)",
+			flags:      Flags{ReedSolomon: true, RSParityBytes: 127},
+			wantFlags3: 127,
+			desc:       "maximum parity should write 127",
+		},
+		{
+			name:       "RS=false",
+			flags:      Flags{ReedSolomon: false},
+			wantFlags3: 0,
+			desc:       "disabled RS should write 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := tt.flags.ToBytes()
+			if b[3] != tt.wantFlags3 {
+				t.Errorf("%s: flags[3] = %d; want %d", tt.desc, b[3], tt.wantFlags3)
+			}
+		})
 	}
 }
 

@@ -234,7 +234,7 @@ func TestRSAllCodecsRoundtrip(t *testing.T) {
 
 func TestNewRSCodecsWithPayloadParity(t *testing.T) {
 	t.Run("valid parity values", func(t *testing.T) {
-		for _, parity := range []int{1, 8, 64, 127} {
+		for _, parity := range []int{2, 8, 64, 127} {
 			codecs, err := NewRSCodecsWithPayloadParity(parity)
 			if err != nil {
 				t.Fatalf("NewRSCodecsWithPayloadParity(%d) failed: %v", parity, err)
@@ -253,7 +253,7 @@ func TestNewRSCodecsWithPayloadParity(t *testing.T) {
 	})
 
 	t.Run("invalid parity values", func(t *testing.T) {
-		for _, parity := range []int{0, -1, 128, 256} {
+		for _, parity := range []int{0, 1, -1, 128, 256} {
 			_, err := NewRSCodecsWithPayloadParity(parity)
 			if err == nil {
 				t.Errorf("NewRSCodecsWithPayloadParity(%d) should have failed", parity)
@@ -276,7 +276,7 @@ func TestNewRSCodecsWithPayloadParity(t *testing.T) {
 	})
 
 	t.Run("encode decode roundtrip with custom parity", func(t *testing.T) {
-		for _, parity := range []int{1, 16, 64, 127} {
+		for _, parity := range []int{2, 16, 64, 127} {
 			codecs, err := NewRSCodecsWithPayloadParity(parity)
 			if err != nil {
 				t.Fatalf("parity=%d: init failed: %v", parity, err)

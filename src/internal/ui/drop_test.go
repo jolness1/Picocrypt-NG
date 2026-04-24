@@ -921,34 +921,36 @@ func snapshotDropState(t *testing.T, a *App) dropStateSnapshot {
 }
 
 type lifecycleCaptureApp struct {
-	driver   fyne.Driver
-	started  func()
-	stopped  func()
-	bg       func()
-	fg       func()
+	driver  fyne.Driver
+	started func()
+	stopped func()
+	bg      func()
+	fg      func()
 }
 
 func newLifecycleCaptureApp(base fyne.App) *lifecycleCaptureApp {
 	return &lifecycleCaptureApp{driver: base.Driver()}
 }
 
-func (a *lifecycleCaptureApp) NewWindow(title string) fyne.Window { return fyne.CurrentApp().NewWindow(title) }
-func (a *lifecycleCaptureApp) OpenURL(*url.URL) error             { return nil }
-func (a *lifecycleCaptureApp) Icon() fyne.Resource                { return nil }
-func (a *lifecycleCaptureApp) SetIcon(fyne.Resource)              {}
-func (a *lifecycleCaptureApp) Run()                               {}
-func (a *lifecycleCaptureApp) Quit()                              {}
-func (a *lifecycleCaptureApp) Driver() fyne.Driver                { return a.driver }
-func (a *lifecycleCaptureApp) UniqueID() string                   { return "lifecycle-capture-app" }
+func (a *lifecycleCaptureApp) NewWindow(title string) fyne.Window {
+	return fyne.CurrentApp().NewWindow(title)
+}
+func (a *lifecycleCaptureApp) OpenURL(*url.URL) error              { return nil }
+func (a *lifecycleCaptureApp) Icon() fyne.Resource                 { return nil }
+func (a *lifecycleCaptureApp) SetIcon(fyne.Resource)               {}
+func (a *lifecycleCaptureApp) Run()                                {}
+func (a *lifecycleCaptureApp) Quit()                               {}
+func (a *lifecycleCaptureApp) Driver() fyne.Driver                 { return a.driver }
+func (a *lifecycleCaptureApp) UniqueID() string                    { return "lifecycle-capture-app" }
 func (a *lifecycleCaptureApp) SendNotification(*fyne.Notification) {}
-func (a *lifecycleCaptureApp) Settings() fyne.Settings            { return fyne.CurrentApp().Settings() }
-func (a *lifecycleCaptureApp) Preferences() fyne.Preferences      { return fyne.CurrentApp().Preferences() }
-func (a *lifecycleCaptureApp) Storage() fyne.Storage              { return fyne.CurrentApp().Storage() }
-func (a *lifecycleCaptureApp) Lifecycle() fyne.Lifecycle          { return a }
-func (a *lifecycleCaptureApp) Metadata() fyne.AppMetadata         { return fyne.AppMetadata{} }
-func (a *lifecycleCaptureApp) CloudProvider() fyne.CloudProvider  { return nil }
+func (a *lifecycleCaptureApp) Settings() fyne.Settings             { return fyne.CurrentApp().Settings() }
+func (a *lifecycleCaptureApp) Preferences() fyne.Preferences       { return fyne.CurrentApp().Preferences() }
+func (a *lifecycleCaptureApp) Storage() fyne.Storage               { return fyne.CurrentApp().Storage() }
+func (a *lifecycleCaptureApp) Lifecycle() fyne.Lifecycle           { return a }
+func (a *lifecycleCaptureApp) Metadata() fyne.AppMetadata          { return fyne.AppMetadata{} }
+func (a *lifecycleCaptureApp) CloudProvider() fyne.CloudProvider   { return nil }
 func (a *lifecycleCaptureApp) SetCloudProvider(fyne.CloudProvider) {}
-func (a *lifecycleCaptureApp) Clipboard() fyne.Clipboard          { return fyne.CurrentApp().Clipboard() }
+func (a *lifecycleCaptureApp) Clipboard() fyne.Clipboard           { return fyne.CurrentApp().Clipboard() }
 
 func (a *lifecycleCaptureApp) SetOnEnteredForeground(fn func()) { a.fg = fn }
 func (a *lifecycleCaptureApp) SetOnExitedForeground(fn func())  { a.bg = fn }

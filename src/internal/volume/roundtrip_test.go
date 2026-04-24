@@ -2757,3 +2757,315 @@ func TestDuplicateKeyfilesRejected(t *testing.T) {
 	t.Logf("Duplicate keyfiles correctly rejected: %v", err)
 	t.Log("Duplicate keyfiles rejection: SUCCESS")
 }
+
+// TestRoundTripDefaultRSCompatibility verifies that encrypting with default RS
+// writes flags[3]=1 (legacy boolean) on disk, so old binaries can read the volume.
+// This simulates "new binary encrypt -> old binary decrypt" by asserting the
+// on-disk format matches the legacy expectation.
+func TestRoundTripDefaultRSCompatibility(t *testing.T) {
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create RS codecs: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+
+	plaintext := []byte("Default RS backward compatibility test data.")
+	inputPath := filepath.Join(tmpDir, "default_rs.txt")
+	if err := os.WriteFile(inputPath, plaintext, 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "default_rs.txt.pcv")
+	decryptedPath := filepath.Join(tmpDir, "default_rs_decrypted.txt")
+
+	reporter := &GoldenTestReporter{}
+
+	// Encrypt with default RS (no custom parity)
+	encReq := &EncryptRequest{
+		InputFile:   inputPath,
+		OutputFile:  encryptedPath,
+		Password:    "default_rs_password",
+		ReedSolomon: true,
+		Reporter:    reporter,
+		RSCodecs:    rsCodecs,
+	}
+
+	if err := Encrypt(context.Background(), encReq); err != nil {
+		t.Fatalf("Encrypt (default RS) failed: %v", err)
+	}
+
+	// Read raw bytes and verify flags[3] == 1 (legacy encoding)
+	// Header layout (empty comments):
+	// version(15) + commentLen(15) + flags(15)
+	// flags[3] is at data offset 3 within the 15-byte RS5-encoded block starting at byte 30
+	data, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted file: %v", err)
+	}
+
+	// Decode the flags field using RS5 to get the raw 5-byte flags
+	flagsEncStart := 30 // 15 (version) + 15 (commentLen) + 0*3 (no comments)
+	flagsEnc := data[flagsEncStart : flagsEncStart+15]
+	flagsDec, err := encoding.Decode(rsCodecs.RS5, flagsEnc, false)
+	if err != nil {
+		t.Fatalf("Failed to RS-decode flags: %v", err)
+	}
+
+	if flagsDec[3] != 1 {
+		t.Errorf("On-disk flags[3] = %d; want 1 (legacy encoding for default RS). "+
+			"Old binaries will fail to read this volume.", flagsDec[3])
+	}
+
+	// Decrypt to verify full roundtrip still works
+	decReq := &DecryptRequest{
+		InputFile:    encryptedPath,
+		OutputFile:   decryptedPath,
+		Password:     "default_rs_password",
+		ForceDecrypt: false,
+		Reporter:     reporter,
+		RSCodecs:     rsCodecs,
+	}
+
+	if err := Decrypt(context.Background(), decReq); err != nil {
+		t.Fatalf("Decrypt (default RS) failed: %v", err)
+	}
+
+	decrypted, err := os.ReadFile(decryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted file: %v", err)
+	}
+
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("Content mismatch.\nExpected: %q\nGot: %q", plaintext, decrypted)
+	}
+
+	t.Log("Round-trip default RS backward compatibility: SUCCESS")
+}
+
+// TestRoundTripCustomRSParity tests encrypt -> decrypt with the minimum allowed
+// custom parity (parityBytes=2). This is the lowest non-legacy parity value.
+func TestRoundTripCustomRSParity(t *testing.T) {
+	// Create codec with minimum custom parity (2 bytes)
+	rsCodecs, err := encoding.NewRSCodecsWithPayloadParity(2)
+	if err != nil {
+		t.Fatalf("Failed to create custom RS codecs: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+
+	plaintext := []byte("Minimum custom RS parity test data for self-roundtrip verification.")
+	inputPath := filepath.Join(tmpDir, "custom_rs.txt")
+	if err := os.WriteFile(inputPath, plaintext, 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "custom_rs.txt.pcv")
+	decryptedPath := filepath.Join(tmpDir, "custom_rs_decrypted.txt")
+
+	reporter := &GoldenTestReporter{}
+
+	// Encrypt with custom parity = 2
+	encReq := &EncryptRequest{
+		InputFile:   inputPath,
+		OutputFile:  encryptedPath,
+		Password:    "custom_parity_password",
+		ReedSolomon: true,
+		Reporter:    reporter,
+		RSCodecs:    rsCodecs,
+	}
+
+	if err := Encrypt(context.Background(), encReq); err != nil {
+		t.Fatalf("Encrypt (custom parity=2) failed: %v", err)
+	}
+
+	// Decrypt — decryptor should read parity from header and reinitialize codec automatically
+	defaultCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create default RS codecs: %v", err)
+	}
+	decReq := &DecryptRequest{
+		InputFile:    encryptedPath,
+		OutputFile:   decryptedPath,
+		Password:     "custom_parity_password",
+		ForceDecrypt: false,
+		Reporter:     reporter,
+		RSCodecs:     defaultCodecs, // Start with default; decryptor should auto-adjust
+	}
+
+	if err := Decrypt(context.Background(), decReq); err != nil {
+		t.Fatalf("Decrypt (custom parity=2) failed: %v", err)
+	}
+
+	decrypted, err := os.ReadFile(decryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted file: %v", err)
+	}
+
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("Content mismatch.\nExpected: %q\nGot: %q", plaintext, decrypted)
+	}
+
+	t.Log("Round-trip custom RS parity=2: SUCCESS")
+}
+
+// TestRoundTripLegacyFlagsDecrypt verifies that a volume encrypted with default RS
+// (which writes flags[3]=1, the legacy boolean) is correctly decrypted by the new
+// binary. This simulates "current release encrypt -> new binary decrypt".
+func TestRoundTripLegacyFlagsDecrypt(t *testing.T) {
+	rsCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create RS codecs: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+
+	plaintext := []byte("Legacy flags[3]=1 decryption test data.")
+	inputPath := filepath.Join(tmpDir, "legacy.txt")
+	if err := os.WriteFile(inputPath, plaintext, 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "legacy.txt.pcv")
+	decryptedPath := filepath.Join(tmpDir, "legacy_decrypted.txt")
+
+	reporter := &GoldenTestReporter{}
+
+	// Encrypt with default RS — this writes flags[3]=1
+	encReq := &EncryptRequest{
+		InputFile:   inputPath,
+		OutputFile:  encryptedPath,
+		Password:    "legacy_password",
+		ReedSolomon: true,
+		Reporter:    reporter,
+		RSCodecs:    rsCodecs,
+	}
+
+	if err := Encrypt(context.Background(), encReq); err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// Verify the on-disk flags[3] is 1
+	data, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted file: %v", err)
+	}
+	flagsEnc := data[30 : 30+15] // version(15) + commentLen(15), no comments
+	flagsDec, err := encoding.Decode(rsCodecs.RS5, flagsEnc, false)
+	if err != nil {
+		t.Fatalf("Failed to RS-decode flags: %v", err)
+	}
+	if flagsDec[3] != 1 {
+		t.Fatalf("On-disk flags[3] = %d; want 1 (legacy encoding)", flagsDec[3])
+	}
+
+	// Decrypt with new binary (default codecs)
+	decReq := &DecryptRequest{
+		InputFile:    encryptedPath,
+		OutputFile:   decryptedPath,
+		Password:     "legacy_password",
+		ForceDecrypt: false,
+		Reporter:     reporter,
+		RSCodecs:     rsCodecs,
+	}
+
+	if err := Decrypt(context.Background(), decReq); err != nil {
+		t.Fatalf("Decrypt (legacy flags) failed: %v", err)
+	}
+
+	decrypted, err := os.ReadFile(decryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted file: %v", err)
+	}
+
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("Content mismatch.\nExpected: %q\nGot: %q", plaintext, decrypted)
+	}
+
+	t.Log("Round-trip legacy flags[3]=1 decrypt: SUCCESS")
+}
+
+// TestRoundTripRSParityBytesPreserved encrypts with a custom RS parity count,
+// reads the header back, and verifies the parity byte is correctly stored on disk
+// and recovered during decryption.
+func TestRoundTripRSParityBytesPreserved(t *testing.T) {
+	const customParity = 50
+
+	rsCodecs, err := encoding.NewRSCodecsWithPayloadParity(customParity)
+	if err != nil {
+		t.Fatalf("Failed to create custom RS codecs: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+
+	plaintext := []byte("Custom RS parity preservation test with 50-byte parity.")
+	inputPath := filepath.Join(tmpDir, "parity50.txt")
+	if err := os.WriteFile(inputPath, plaintext, 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	encryptedPath := filepath.Join(tmpDir, "parity50.txt.pcv")
+	decryptedPath := filepath.Join(tmpDir, "parity50_decrypted.txt")
+
+	reporter := &GoldenTestReporter{}
+
+	// Encrypt with custom parity = 50
+	encReq := &EncryptRequest{
+		InputFile:   inputPath,
+		OutputFile:  encryptedPath,
+		Password:    "parity50_password",
+		ReedSolomon: true,
+		Reporter:    reporter,
+		RSCodecs:    rsCodecs,
+	}
+
+	if err := Encrypt(context.Background(), encReq); err != nil {
+		t.Fatalf("Encrypt (parity=50) failed: %v", err)
+	}
+
+	// Read raw header and verify flags[3] == 50
+	data, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted file: %v", err)
+	}
+
+	// Decode flags using default RS5 codec (header RS codecs are always default)
+	defaultCodecs, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create default RS codecs: %v", err)
+	}
+	flagsEnc := data[30 : 30+15]
+	flagsDec, err := encoding.Decode(defaultCodecs.RS5, flagsEnc, false)
+	if err != nil {
+		t.Fatalf("Failed to RS-decode flags: %v", err)
+	}
+
+	if flagsDec[3] != customParity {
+		t.Errorf("On-disk flags[3] = %d; want %d", flagsDec[3], customParity)
+	}
+
+	// Decrypt with default codecs (decryptor should auto-detect parity from header)
+	decReq := &DecryptRequest{
+		InputFile:    encryptedPath,
+		OutputFile:   decryptedPath,
+		Password:     "parity50_password",
+		ForceDecrypt: false,
+		Reporter:     reporter,
+		RSCodecs:     defaultCodecs,
+	}
+
+	if err := Decrypt(context.Background(), decReq); err != nil {
+		t.Fatalf("Decrypt (parity=50) failed: %v", err)
+	}
+
+	decrypted, err := os.ReadFile(decryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read decrypted file: %v", err)
+	}
+
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("Content mismatch.\nExpected: %q\nGot: %q", plaintext, decrypted)
+	}
+
+	t.Log("Round-trip RS parity=50 preserved: SUCCESS")
+}

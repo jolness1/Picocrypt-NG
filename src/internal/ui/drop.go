@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	dropScanBatchSize       = 128
-	dropScanFlushInterval   = 50 * time.Millisecond
-	startupPathAccessStatus = "Failed to access startup path"
+	dropScanBatchSize              = 128
+	dropScanFlushInterval          = 50 * time.Millisecond
+	startupPathAccessStatus        = "Failed to access startup path"
+	startupPathPartialAccessStatus = "Some startup paths could not be accessed"
 )
 
 type scannedFile struct {
@@ -33,6 +34,22 @@ var startupPathStat = os.Stat
 
 func isIgnoredStartupArg(path string) bool {
 	return path == "" || strings.HasPrefix(path, "-psn_")
+}
+
+func isDecryptVolumePath(path string) bool {
+	if fileops.IsSplitChunkPath(path) {
+		return true
+	}
+
+	return strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pcv")
+}
+
+func trimPCVSuffix(path string) string {
+	if !strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pcv") {
+		return path
+	}
+
+	return path[:len(path)-4]
 }
 
 func collectStartupPaths(paths []string, statFn func(string) (os.FileInfo, error)) ([]string, error) {
@@ -73,6 +90,19 @@ func (a *App) applyStartupPaths(paths []string) {
 	}
 
 	a.onDrop(validPaths)
+	if err != nil {
+		a.State.MainStatus = startupPathPartialAccessStatus
+		a.State.MainStatusColor = util.YELLOW
+		a.refreshUI()
+	}
+}
+
+func (a *App) applyFolderWalkError() {
+	a.State.SetScanning(false)
+	a.resetUI()
+	a.State.MainStatus = "Failed to walk through dropped items"
+	a.State.MainStatusColor = util.RED
+	a.refreshUI()
 }
 
 func (a *App) appendScannedFiles(files []scannedFile) {
@@ -141,7 +171,7 @@ func (a *App) onDrop(names []string) {
 			isSplit := fileops.IsSplitChunkPath(names[0])
 
 			// Decide if encrypting or decrypting
-			if strings.HasSuffix(names[0], ".pcv") || isSplit {
+			if isDecryptVolumePath(names[0]) {
 				a.handleDecryptDrop(names[0], isSplit)
 				// For decrypt, no folder scanning needed
 				a.State.SetScanning(false)
@@ -204,10 +234,7 @@ func (a *App) onDrop(names []string) {
 			if filepath.Walk(name, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					fyne.DoAndWait(func() {
-						a.resetUI()
-						a.State.MainStatus = "Failed to walk through dropped items"
-						a.State.MainStatusColor = util.RED
-						a.refreshUI()
+						a.applyFolderWalkError()
 					})
 					return err
 				}
@@ -222,10 +249,7 @@ func (a *App) onDrop(names []string) {
 				return nil
 			}) != nil {
 				fyne.DoAndWait(func() {
-					a.resetUI()
-					a.State.MainStatus = "Failed to walk through dropped items"
-					a.State.MainStatusColor = util.RED
-					a.refreshUI()
+					a.applyFolderWalkError()
 				})
 				return
 			}
@@ -265,10 +289,14 @@ func (a *App) handleDecryptDrop(name string, isSplit bool) {
 
 	// Get the correct input and output filenames
 	if isSplit {
-		ind := strings.Index(name, ".pcv")
-		name = name[:ind+4]
+		basePath, ok := fileops.SplitChunkBase(name)
+		if !ok {
+			a.applyDropError("Failed to derive split volume path", false)
+			return
+		}
+		name = basePath
 		a.State.InputFile = name
-		a.State.OutputFile = name[:ind]
+		a.State.OutputFile = trimPCVSuffix(name)
 		a.State.Recombine = true
 
 		// Find out the number of split chunks
@@ -284,7 +312,7 @@ func (a *App) handleDecryptDrop(name string, isSplit bool) {
 		a.State.RequiredFreeSpace = a.State.CompressTotal
 	} else {
 		a.State.InputFile = name
-		a.State.OutputFile = name[:len(name)-4]
+		a.State.OutputFile = trimPCVSuffix(name)
 	}
 
 	// Open the input file in read-only mode

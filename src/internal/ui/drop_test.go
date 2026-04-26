@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/test"
 )
 
 // TestFileTypeDetection tests detection of encrypted vs plain files.
@@ -31,6 +31,7 @@ func TestFileTypeDetection(t *testing.T) {
 		{"PlainText", "document.txt", false, false, true},
 		{"PlainPDF", "report.pdf", false, false, true},
 		{"EncryptedPcv", "secret.pcv", true, false, false},
+		{"EncryptedPcvUppercase", "secret.PCV", true, false, false},
 		{"SplitChunk0", "secret.pcv.0", true, true, false},
 		{"SplitChunk1", "secret.pcv.1", true, true, false},
 		{"SplitChunk99", "secret.pcv.99", true, true, false},
@@ -45,8 +46,9 @@ func TestFileTypeDetection(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			isPcv := strings.HasSuffix(tc.filename, ".pcv")
 			isSplit := detectSplitVolume(tc.filename)
+			isDecrypt := isDecryptVolumePath(tc.filename)
+			isPcv := isDecrypt && !isSplit
 
 			if isPcv != tc.isPcv && !isSplit {
 				t.Errorf("isPcv = %v; want %v for %q", isPcv, tc.isPcv, tc.filename)
@@ -56,7 +58,7 @@ func TestFileTypeDetection(t *testing.T) {
 			}
 
 			// Determine encrypt mode
-			isEncrypt := !isPcv && !isSplit
+			isEncrypt := !isDecrypt
 			if isEncrypt != tc.isEncrypt {
 				t.Errorf("isEncrypt = %v; want %v for %q", isEncrypt, tc.isEncrypt, tc.filename)
 			}
@@ -85,9 +87,10 @@ func TestSplitVolumeBasePath(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Extract base path (logic from handleDecryptDrop)
-			ind := strings.Index(tc.chunkPath, ".pcv")
-			basePath := tc.chunkPath[:ind+4]
+			basePath, ok := fileops.SplitChunkBase(tc.chunkPath)
+			if !ok {
+				t.Fatalf("SplitChunkBase(%q) returned ok=false", tc.chunkPath)
+			}
 
 			if basePath != tc.expectedBase {
 				t.Errorf("basePath = %q; want %q", basePath, tc.expectedBase)
@@ -106,12 +109,12 @@ func TestOutputPathFromDecrypt(t *testing.T) {
 		{"SimplePcv", "/path/secret.pcv", "/path/secret"},
 		{"NestedPcv", "/a/b/c/file.pcv", "/a/b/c/file"},
 		{"MultipleDots", "/path/file.tar.gz.pcv", "/path/file.tar.gz"},
+		{"UppercasePcv", "/path/SECRET.PCV", "/path/SECRET"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Remove .pcv suffix (logic from handleDecryptDrop)
-			output := tc.inputPath[:len(tc.inputPath)-4]
+			output := trimPCVSuffix(tc.inputPath)
 
 			if output != tc.outputPath {
 				t.Errorf("output = %q; want %q", output, tc.outputPath)
@@ -193,8 +196,7 @@ func itoa(n int) string {
 
 // TestDropStateTransitions tests state changes during drop handling.
 func TestDropStateTransitions(t *testing.T) {
-	test.NewApp()
-	defer test.NewApp()
+	newTestFyneApp(t)
 
 	t.Run("SingleFileDropSetsEncryptMode", func(t *testing.T) {
 		state := app.NewState()
@@ -245,7 +247,7 @@ func TestDropStateTransitions(t *testing.T) {
 }
 
 func TestApplyDropErrorPreservesStatusAfterReset(t *testing.T) {
-	test.NewApp()
+	newTestFyneApp(t)
 
 	testCases := []struct {
 		name              string
@@ -282,8 +284,7 @@ func TestApplyDropErrorPreservesStatusAfterReset(t *testing.T) {
 }
 
 func TestApplyStartupPathsLoadsInitialFiles(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 	inputFile := filepath.Join(t.TempDir(), "report.txt")
@@ -314,9 +315,83 @@ func TestApplyStartupPathsLoadsInitialFiles(t *testing.T) {
 	}
 }
 
+func TestApplyStartupPathsLoadsDecryptVolume(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	inputFile := filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv")
+
+	fyne.DoAndWait(func() {
+		a.applyStartupPaths([]string{inputFile})
+	})
+	state := snapshotDropState(t, a)
+
+	if state.Mode != "decrypt" {
+		t.Fatalf("Mode = %q; want decrypt", state.Mode)
+	}
+	if state.InputFile != inputFile {
+		t.Fatalf("InputFile = %q; want %q", state.InputFile, inputFile)
+	}
+	if state.OutputFile != strings.TrimSuffix(inputFile, ".pcv") {
+		t.Fatalf("OutputFile = %q; want %q", state.OutputFile, strings.TrimSuffix(inputFile, ".pcv"))
+	}
+	if len(state.OnlyFiles) != 1 || state.OnlyFiles[0] != inputFile {
+		t.Fatalf("OnlyFiles = %#v; want [%q]", state.OnlyFiles, inputFile)
+	}
+}
+
+func TestApplyStartupPathsWithMacOSProcessSerialLoadsDecryptVolume(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	inputFile := filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv")
+
+	fyne.DoAndWait(func() {
+		a.applyStartupPaths([]string{"-psn_0_12345", inputFile})
+	})
+	state := snapshotDropState(t, a)
+
+	if state.Mode != "decrypt" {
+		t.Fatalf("Mode = %q; want decrypt", state.Mode)
+	}
+	if state.InputFile != inputFile {
+		t.Fatalf("InputFile = %q; want %q", state.InputFile, inputFile)
+	}
+}
+
+func TestApplyStartupPathsTreatsUppercaseVolumeExtensionAsDecrypt(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	tempDir := t.TempDir()
+	original := filepath.Join("..", "..", "testdata", "golden", "pico_test_v2.txt.pcv")
+	inputFile := filepath.Join(tempDir, "PICO_TEST_V2.TXT.PCV")
+	data, err := os.ReadFile(original)
+	if err != nil {
+		t.Fatalf("Read golden volume: %v", err)
+	}
+	if err := os.WriteFile(inputFile, data, 0644); err != nil {
+		t.Fatalf("Write uppercase volume: %v", err)
+	}
+
+	fyne.DoAndWait(func() {
+		a.applyStartupPaths([]string{inputFile})
+	})
+	state := snapshotDropState(t, a)
+
+	if state.Mode != "decrypt" {
+		t.Fatalf("Mode = %q; want decrypt", state.Mode)
+	}
+	if state.InputFile != inputFile {
+		t.Fatalf("InputFile = %q; want %q", state.InputFile, inputFile)
+	}
+	if state.OutputFile != strings.TrimSuffix(inputFile, ".PCV") {
+		t.Fatalf("OutputFile = %q; want %q", state.OutputFile, strings.TrimSuffix(inputFile, ".PCV"))
+	}
+}
+
 func TestApplyStartupPathsIgnoresMacOSProcessSerialNumber(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 
@@ -337,8 +412,7 @@ func TestApplyStartupPathsIgnoresMacOSProcessSerialNumber(t *testing.T) {
 }
 
 func TestApplyStartupPathsIgnoresMissingNonFlagArgs(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 
@@ -356,8 +430,7 @@ func TestApplyStartupPathsIgnoresMissingNonFlagArgs(t *testing.T) {
 }
 
 func TestApplyStartupPathsSkipsInvalidArgsWhenValidPathsRemain(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 	tempDir := t.TempDir()
@@ -385,8 +458,7 @@ func TestApplyStartupPathsSkipsInvalidArgsWhenValidPathsRemain(t *testing.T) {
 }
 
 func TestApplyStartupPathsAllowsHyphenPrefixedFilename(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 	inputFile := filepath.Join(t.TempDir(), "-secret.txt")
@@ -409,8 +481,7 @@ func TestApplyStartupPathsAllowsHyphenPrefixedFilename(t *testing.T) {
 }
 
 func TestApplyStartupPathsReportsAccessError(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 	originalStat := startupPathStat
@@ -430,6 +501,43 @@ func TestApplyStartupPathsReportsAccessError(t *testing.T) {
 	}
 	if a.State.MainStatusColor != util.RED {
 		t.Fatalf("MainStatusColor = %#v; want %#v", a.State.MainStatusColor, util.RED)
+	}
+}
+
+func TestApplyStartupPathsPreservesPartialAccessWarning(t *testing.T) {
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	inputFile := filepath.Join(t.TempDir(), "report.txt")
+	if err := os.WriteFile(inputFile, []byte("quarterly report"), 0644); err != nil {
+		t.Fatalf("Create test file: %v", err)
+	}
+
+	originalStat := startupPathStat
+	startupPathStat = func(path string) (os.FileInfo, error) {
+		if path == "blocked.txt" {
+			return nil, os.ErrPermission
+		}
+		return originalStat(path)
+	}
+	defer func() {
+		startupPathStat = originalStat
+	}()
+
+	fyne.DoAndWait(func() {
+		a.applyStartupPaths([]string{"blocked.txt", inputFile})
+	})
+	waitForDropProcessing(t, a)
+	state := snapshotDropState(t, a)
+
+	if state.Mode != "encrypt" {
+		t.Fatalf("Mode = %q; want encrypt", state.Mode)
+	}
+	if state.InputFile != inputFile {
+		t.Fatalf("InputFile = %q; want %q", state.InputFile, inputFile)
+	}
+	if state.MainStatus != startupPathPartialAccessStatus {
+		t.Fatalf("MainStatus = %q; want %q", state.MainStatus, startupPathPartialAccessStatus)
 	}
 }
 
@@ -468,8 +576,7 @@ func TestCollectStartupPathsSkipsMissingAndReportsAccessError(t *testing.T) {
 }
 
 func TestAppendScannedFilesUpdatesState(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 
@@ -497,9 +604,46 @@ func TestAppendScannedFilesUpdatesState(t *testing.T) {
 	}
 }
 
+func TestFolderWalkErrorClearsScanningState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based walk failure setup is not reliable on Windows")
+	}
+
+	fyneApp := newTestFyneApp(t)
+
+	a := createUIReadyDropTestApp(t, fyneApp)
+	rootDir := t.TempDir()
+	blockedDir := filepath.Join(rootDir, "blocked")
+	if err := os.Mkdir(blockedDir, 0700); err != nil {
+		t.Fatalf("create blocked dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "visible.txt"), []byte("ok"), 0600); err != nil {
+		t.Fatalf("create visible file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(blockedDir, "secret.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatalf("create blocked file: %v", err)
+	}
+	if err := os.Chmod(blockedDir, 0); err != nil {
+		t.Fatalf("chmod blocked dir: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(blockedDir, 0700)
+	}()
+
+	fyne.DoAndWait(func() {
+		a.onDrop([]string{rootDir})
+	})
+
+	waitForDropProcessing(t, a)
+	fyne.DoAndWait(func() {})
+
+	if a.State.IsScanning() {
+		t.Fatal("Scanning should be false after folder walk error")
+	}
+}
+
 func TestScheduleStartupPathsDefersUntilLifecycleStart(t *testing.T) {
-	fyneApp := test.NewApp()
-	defer fyneApp.Quit()
+	fyneApp := newTestFyneApp(t)
 
 	a := createUIReadyDropTestApp(t, fyneApp)
 	inputFile := filepath.Join(t.TempDir(), "startup.txt")

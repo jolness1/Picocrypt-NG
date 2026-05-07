@@ -44,7 +44,7 @@ A Picocrypt NG volume's header is encoded with Reed-Solomon by default since it 
 | flags[0]   | Paranoid mode (0=off, 1=on)
 | flags[1]   | Keyfiles used (0=no, 1=yes)
 | flags[2]   | Keyfile order matters (0=no, 1=yes)
-| flags[3]   | **v2.08+**: RS parity byte count (0=disabled, 1–127=enabled with N bytes); **v2.07 and earlier**: boolean (0=disabled, 1=enabled with default 8-byte parity)
+| flags[3]   | **v2.08+**: RS parity encoding (0=disabled, 1=legacy sentinel for default 8-byte parity, 2–127=enabled with N parity bytes); **v2.07 and earlier**: boolean (0=disabled, 1=enabled with default 8-byte parity)
 | flags[4]   | Final RS block was padded (0=no, 1=yes)
 
 ## Header Authentication (v2)
@@ -91,7 +91,7 @@ By default, all Picocrypt NG volume headers are encoded with Reed-Solomon to imp
 
 If Reed-Solomon is to be used with the input data itself, the data will be encoded using 128+P encoding (where P is the number of parity bytes, default P=8, giving 128+8=136 bytes per block). The data is read in 1 MiB chunks and encoded in 128-byte blocks, with the final block padded to 128 bytes using PKCS#7.
 
-As of **v2.08**, the parity byte count P is stored directly in `flags[3]` of the volume header, so decryption is entirely self-describing — there is no need to remember or re-supply the parity setting. P may be set from 1 to 127, trading file-size overhead for greater corruption tolerance:
+As of **v2.08**, the parity setting is stored directly in `flags[3]` of the volume header, so decryption is entirely self-describing — there is no need to remember or re-supply the parity setting. The value `1` is reserved as a legacy sentinel meaning default parity (8 bytes), while custom parity values use 2 to 127, trading file-size overhead for greater corruption tolerance:
 
 | Parity bytes (P) | Size overhead | Errors correctable per 128-byte block |
 | ---------------- | ------------- | -------------------------------------- |

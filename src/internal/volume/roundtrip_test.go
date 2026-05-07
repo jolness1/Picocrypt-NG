@@ -3,6 +3,7 @@ package volume
 import (
 	"archive/zip"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"os"
@@ -10,8 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"Picocrypt-NG/internal/crypto"
 	"Picocrypt-NG/internal/encoding"
 	"Picocrypt-NG/internal/fileops"
+	"Picocrypt-NG/internal/header"
 )
 
 // TestRoundTripBasic tests basic encrypt -> decrypt cycle
@@ -2919,6 +2922,81 @@ func TestRoundTripDefaultRSCompatibility(t *testing.T) {
 	t.Log("Round-trip default RS backward compatibility: SUCCESS")
 }
 
+// TestRoundTripLegacyV208MACCompatibility simulates v2.08 header-auth behavior:
+// a legacy reader treated flags[3] as boolean (1=true, anything else=false).
+//
+// This verifies:
+//  1. default RS volumes (flags[3]=1) remain MAC-compatible with legacy readers
+//  2. custom-parity volumes are intentionally NOT MAC-compatible with legacy readers
+func TestRoundTripLegacyV208MACCompatibility(t *testing.T) {
+	testCases := []struct {
+		name               string
+		rsCodecs           *encoding.RSCodecs
+		wantLegacyMACMatch bool
+		wantFlags3         byte
+		plaintext          string
+		password           string
+	}{
+		{
+			name:               "default parity keeps legacy compatibility",
+			rsCodecs:           mustRSCodecs(t),
+			wantLegacyMACMatch: true,
+			wantFlags3:         1,
+			plaintext:          "default RS legacy MAC compatibility",
+			password:           "legacy_default_password",
+		},
+		{
+			name:               "custom parity intentionally breaks legacy compatibility",
+			rsCodecs:           mustCustomRSCodecs(t, 50),
+			wantLegacyMACMatch: false,
+			wantFlags3:         50,
+			plaintext:          "custom parity legacy MAC incompatibility",
+			password:           "legacy_custom_password",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			inputPath := filepath.Join(tmpDir, "legacy_mac.txt")
+			if err := os.WriteFile(inputPath, []byte(tc.plaintext), 0644); err != nil {
+				t.Fatalf("Failed to write test file: %v", err)
+			}
+
+			encryptedPath := filepath.Join(tmpDir, "legacy_mac.txt.pcv")
+			reporter := &GoldenTestReporter{}
+
+			encReq := &EncryptRequest{
+				InputFile:   inputPath,
+				OutputFile:  encryptedPath,
+				Password:    tc.password,
+				ReedSolomon: true,
+				Reporter:    reporter,
+				RSCodecs:    tc.rsCodecs,
+			}
+			if err := Encrypt(context.Background(), encReq); err != nil {
+				t.Fatalf("Encrypt failed: %v", err)
+			}
+
+			rawResult := readHeaderRawForTest(t, encryptedPath)
+			if rawResult.Raw.Flags[3] != tc.wantFlags3 {
+				t.Fatalf("on-disk flags[3] = %d; want %d", rawResult.Raw.Flags[3], tc.wantFlags3)
+			}
+
+			subkeyHeader := deriveHeaderSubkeyForTest(t, tc.password, rawResult.Header)
+			legacyRaw := *rawResult.Raw
+			legacyRaw.Flags = legacyBooleanFlags(rawResult.Raw.Flags)
+
+			legacyMAC := header.ComputeV2HeaderMACRaw(subkeyHeader, &legacyRaw, rawResult.Header, make([]byte, 32))
+			legacyMACMatches := subtle.ConstantTimeCompare(legacyMAC, rawResult.Header.KeyHash) == 1
+
+			if legacyMACMatches != tc.wantLegacyMACMatch {
+				t.Fatalf("legacy MAC match = %v; want %v", legacyMACMatches, tc.wantLegacyMACMatch)
+			}
+		})
+	}
+}
+
 // TestRoundTripCustomRSParity tests encrypt -> decrypt with the minimum allowed
 // custom parity (parityBytes=2). This is the lowest non-legacy parity value.
 func TestRoundTripCustomRSParity(t *testing.T) {
@@ -2953,6 +3031,20 @@ func TestRoundTripCustomRSParity(t *testing.T) {
 
 	if err := Encrypt(context.Background(), encReq); err != nil {
 		t.Fatalf("Encrypt (custom parity=2) failed: %v", err)
+	}
+
+	// Verify on-disk parity byte is 2 (not the legacy sentinel 1).
+	data, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted file: %v", err)
+	}
+	flagsEnc := data[30 : 30+15]
+	flagsDec, err := encoding.Decode(mustRSCodecs(t).RS5, flagsEnc, false)
+	if err != nil {
+		t.Fatalf("Failed to RS-decode flags: %v", err)
+	}
+	if flagsDec[3] != 2 {
+		t.Fatalf("On-disk flags[3] = %d; want 2 (minimum custom parity, 1 is reserved)", flagsDec[3])
 	}
 
 	// Decrypt — decryptor should read parity from header and reinitialize codec automatically
@@ -3144,4 +3236,66 @@ func TestRoundTripRSParityBytesPreserved(t *testing.T) {
 	}
 
 	t.Log("Round-trip RS parity=50 preserved: SUCCESS")
+}
+
+func mustRSCodecs(t *testing.T) *encoding.RSCodecs {
+	t.Helper()
+	r, err := encoding.NewRSCodecs()
+	if err != nil {
+		t.Fatalf("Failed to create default RS codecs: %v", err)
+	}
+	return r
+}
+
+func mustCustomRSCodecs(t *testing.T, parityBytes int) *encoding.RSCodecs {
+	t.Helper()
+	r, err := encoding.NewRSCodecsWithPayloadParity(parityBytes)
+	if err != nil {
+		t.Fatalf("Failed to create custom RS codecs: %v", err)
+	}
+	return r
+}
+
+func readHeaderRawForTest(t *testing.T, encryptedPath string) *header.ReadHeaderRawResult {
+	t.Helper()
+	fin, err := os.Open(encryptedPath)
+	if err != nil {
+		t.Fatalf("Failed to open encrypted file: %v", err)
+	}
+	defer func() { _ = fin.Close() }()
+
+	r := header.NewReader(fin, mustRSCodecs(t))
+	rawResult, err := r.ReadHeaderRaw()
+	if err != nil {
+		t.Fatalf("ReadHeaderRaw failed: %v", err)
+	}
+	return rawResult
+}
+
+func deriveHeaderSubkeyForTest(t *testing.T, password string, h *header.VolumeHeader) []byte {
+	t.Helper()
+	key, err := deriveVolumeKey([]byte(password), h.Salt, h.Flags.Paranoid)
+	if err != nil {
+		t.Fatalf("deriveVolumeKey failed: %v", err)
+	}
+	hkdfStream := crypto.NewHKDFStream(key, h.HKDFSalt)
+	subkeyReader := crypto.NewSubkeyReader(hkdfStream)
+	subkeyHeader, err := subkeyReader.HeaderSubkey()
+	if err != nil {
+		t.Fatalf("HeaderSubkey failed: %v", err)
+	}
+	return subkeyHeader
+}
+
+func legacyBooleanFlags(rawFlags []byte) []byte {
+	f := make([]byte, len(rawFlags))
+	copy(f, rawFlags)
+	if len(f) >= 4 {
+		if f[3] == 1 {
+			f[3] = 1
+		} else {
+			f[3] = 0
+		}
+	}
+	return f
 }

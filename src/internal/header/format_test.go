@@ -28,9 +28,9 @@ func TestHeaderSize(t *testing.T) {
 }
 
 func TestFlags(t *testing.T) {
-	// Test all flags set. With the v2.08 format, flags[3] encodes the actual parity
-	// byte count rather than a simple boolean.  When ReedSolomon=true and RSParityBytes=0
-	// ToBytes() falls back to encoding.DefaultRS128ParityBytes (8).
+	// Test all flags set. Default RS still writes the legacy sentinel 1 so existing
+	// binaries read the volume correctly, while custom parity values are written
+	// directly when RSParityBytes is set to a non-default value.
 	flags := Flags{
 		Paranoid:       true,
 		UseKeyfiles:    true,

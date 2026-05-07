@@ -18,8 +18,8 @@ func TestMain(m *testing.M) {
 	app := test.NewApp()
 	fyne.DoAndWait(func() {
 		// Trigger font metric cache population on the common path.
-		_ = fyne.MeasureText("Picocrypt NG 2.09", 14, fyne.TextStyle{})
-		_ = fyne.MeasureText("Picocrypt NG 2.09", 14, fyne.TextStyle{Bold: true})
+		_ = fyne.MeasureText("Picocrypt NG 2.10", 14, fyne.TextStyle{})
+		_ = fyne.MeasureText("Picocrypt NG 2.10", 14, fyne.TextStyle{Bold: true})
 	})
 	app.Quit()
 	os.Exit(m.Run())

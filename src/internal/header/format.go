@@ -6,7 +6,7 @@ import "Picocrypt-NG/internal/encoding"
 
 // Version constants
 const (
-	CurrentVersion = "v2.09"
+	CurrentVersion = "v2.10"
 	MaxCommentLen  = 99999
 )
 
@@ -140,7 +140,7 @@ func FlagsFromBytes(b []byte) Flags {
 // VolumeHeader contains all header fields for a Picocrypt volume
 type VolumeHeader struct {
 	// Metadata
-	Version  string // "v2.08" or "v1.xx"
+	Version  string // "v2.xx" or "v1.xx"
 	Comments string // User-provided comments (plaintext, not encrypted!)
 	Flags    Flags
 

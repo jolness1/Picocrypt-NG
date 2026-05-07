@@ -2922,13 +2922,14 @@ func TestRoundTripDefaultRSCompatibility(t *testing.T) {
 	t.Log("Round-trip default RS backward compatibility: SUCCESS")
 }
 
-// TestRoundTripLegacyV208MACCompatibility simulates v2.08 header-auth behavior:
-// a legacy reader treated flags[3] as boolean (1=true, anything else=false).
+// TestRoundTripLegacyBooleanMACCompatibility simulates a legacy reader that
+// treated flags[3] as a boolean (1=true, anything else=false) when verifying
+// the header MAC.
 //
 // This verifies:
 //  1. default RS volumes (flags[3]=1) remain MAC-compatible with legacy readers
 //  2. custom-parity volumes are intentionally NOT MAC-compatible with legacy readers
-func TestRoundTripLegacyV208MACCompatibility(t *testing.T) {
+func TestRoundTripLegacyBooleanMACCompatibility(t *testing.T) {
 	testCases := []struct {
 		name               string
 		rsCodecs           *encoding.RSCodecs

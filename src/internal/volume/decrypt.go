@@ -183,8 +183,8 @@ func decryptReadHeader(ctx *OperationContext, req *DecryptRequest) error {
 	// Use ReadHeaderRaw to obtain both the parsed header AND the verbatim decoded bytes.
 	// The raw bytes are needed for v2 header MAC verification: the MAC was computed over
 	// the exact bytes stored in the file, so we must use those bytes (not a struct
-	// re-encoding) when checking, to maintain backward compatibility with v2.07 files
-	// where flags[3] stored a boolean (1) rather than the parity byte count.
+	// re-encoding) when checking, to maintain backward compatibility with files whose
+	// header MAC was computed over the legacy boolean encoding of flags[3].
 	reader := header.NewReader(fin, req.RSCodecs)
 	rawResult, err := reader.ReadHeaderRaw()
 	if err != nil {
@@ -327,9 +327,9 @@ func decryptVerifyAuth(ctx *OperationContext, req *DecryptRequest) error {
 		// Verify header MAC
 		// Use VerifyV2HeaderRaw so the HMAC is computed over the exact bytes that
 		// were written to disk (ctx.RawHeader.Flags) instead of a struct re-encoding.
-		// This is necessary for backward compatibility with v2.07 files, where
-		// flags[3] stored a boolean 1 rather than the parity byte count that
-		// Flags.ToBytes() now emits for v2.08+.
+		// This is necessary for backward compatibility with files whose header MAC
+		// covered the legacy boolean encoding of flags[3] instead of the newer
+		// custom-parity byte values.
 		authResult := header.VerifyV2HeaderRaw(subkeyHeader, ctx.RawHeader, ctx.Header, ctx.KeyfileHash)
 
 		if !authResult.Valid {

@@ -44,7 +44,7 @@ A Picocrypt NG volume's header is encoded with Reed-Solomon by default since it 
 | flags[0]   | Paranoid mode (0=off, 1=on)
 | flags[1]   | Keyfiles used (0=no, 1=yes)
 | flags[2]   | Keyfile order matters (0=no, 1=yes)
-| flags[3]   | **v2.08+**: RS parity encoding (0=disabled, 1=legacy sentinel for default 8-byte parity, 2–127=enabled with N parity bytes); **v2.07 and earlier**: boolean (0=disabled, 1=enabled with default 8-byte parity)
+| flags[3]   | **v2.08+**: RS parity encoding (0=disabled, 1=legacy sentinel for default 8-byte parity, 2–127=enabled with N parity bytes); **v2.09 and earlier**: boolean (0=disabled, 1=enabled with default 8-byte parity)
 | flags[4]   | Final RS block was padded (0=no, 1=yes)
 
 ## Header Authentication (v2)
